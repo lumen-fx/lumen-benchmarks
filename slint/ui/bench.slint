@@ -1,0 +1,76 @@
+import { ListView, LineEdit, Slider, Button } from "std-widgets.slint";
+
+export struct RowData {
+    i: int,
+}
+
+export component BenchWindow inherits Window {
+    title: "Bench";
+    width: 800px;
+    height: 600px;
+
+    in property <[RowData]> model;
+    in-out property <int> count: 0;
+    callback inc();
+    in-out property <float> slider-value: 50;
+    in-out property <length> vy <=> lv.viewport-y;
+    out property <length> visible-h: lv.visible-height;
+    out property <length> content-h: lv.viewport-height;
+
+    VerticalLayout {
+        HorizontalLayout {
+            height: 48px;
+            padding: 8px;
+            spacing: 12px;
+            Text {
+                text: "Bench";
+                font-size: 18px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Rectangle { }
+            Button {
+                text: "Count: " + root.count;
+                clicked => { root.inc(); }
+            }
+        }
+        lv := ListView {
+            for item in root.model: HorizontalLayout {
+                height: 36px;
+                padding-left: 8px;
+                spacing: 12px;
+                Text {
+                    text: "Item " + item.i;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "subtitle " + item.i;
+                    color: #777777;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+            }
+        }
+        HorizontalLayout {
+            height: 56px;
+            padding: 8px;
+            spacing: 12px;
+            LineEdit {
+                placeholder-text: "Type here...";
+                width: 240px;
+            }
+            Slider {
+                minimum: 0;
+                maximum: 100;
+                value <=> root.slider-value;
+                width: 200px;
+            }
+            Text {
+                text: Math.round(root.slider-value);
+                vertical-alignment: center;
+            }
+            Rectangle { }
+        }
+    }
+}
