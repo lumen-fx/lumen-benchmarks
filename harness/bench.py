@@ -17,11 +17,17 @@ same way:
     pass ends; for hello, 5 s after first frame)
   * stripped binary size per app
 
-All measurement runs happen under a nested headless compositor
-(weston --backend=headless, fallback Xvfb); nothing appears on the
-developer's desktop. Lumen runs `lumenc run --headless` and is measured
-externally over its MCP server (persistent connection, `lumen.tick`
-sampled every 0.5 ms) - see the caveats section of results.md.
+All six frameworks run windowed under the same nested headless
+compositor (weston --backend=headless --renderer=gl, fallback Xvfb);
+nothing appears on the developer's desktop. Lumen runs `lumenc run`
+windowed (real winit window + wgpu AutoVsync present through weston,
+like the other five) and is measured externally over its MCP server
+(persistent connection, `lumen.tick` sampled every 0.5 ms) - see the
+caveats section of results.md. The GL renderer accumulates GPU-side
+state across the many short-lived clients a full round spawns, so the
+compositor is restarted at each framework boundary (and on a wedged
+pass) to keep every cell on a fresh compositor - the regime every cell
+passes in isolation.
 
 Usage:
     harness/bench.py build                    # build + size everything
@@ -354,8 +360,17 @@ class Display:
             env = os.environ.copy()
             env["XDG_RUNTIME_DIR"] = runtime_dir
             env.pop("WAYLAND_DISPLAY", None)
+            # --renderer=gl: weston uses EGL on the real GPU (surfaceless)
+            # instead of the noop/pixman software path, so wayland clients
+            # get hardware, dmabuf-backed surfaces. Required for Lumen's
+            # wgpu-Vulkan present path - under a software renderer the only
+            # surface-presentable Vulkan adapter is Lavapipe, which is
+            # downlevel and Lumen (rightly) refuses it. The other five
+            # frameworks render fine under GL too (superset of the software
+            # path), so all six share one compositor + present path.
             self.proc = subprocess.Popen(
-                ["weston", "--backend=headless", f"--socket={WESTON_SOCKET}",
+                ["weston", "--backend=headless", "--renderer=gl",
+                 f"--socket={WESTON_SOCKET}",
                  "--width=1280", "--height=1024"],
                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 preexec_fn=self._preexec)
@@ -385,12 +400,10 @@ class Display:
         env["BENCH_SCROLL_SECONDS"] = str(SCROLL_SECONDS)
         env["BENCH_INTERACT_CYCLES"] = str(INTERACT_CYCLES)
         env["BENCH_CORPUS"] = str(CORPUS)
-        if fw_name == "lumen":
-            # lumenc --headless renders offscreen (no window); DISPLAY
-            # points at the harness Xvfb for GPU-discovery parity.
-            if self.xvfb is not None:
-                env["DISPLAY"] = XVFB_DISPLAY
-            return env
+        # Lumen runs windowed under the same nested compositor as the other
+        # five (winit picks the wayland backend from WAYLAND_DISPLAY, the x11
+        # backend from DISPLAY) so every framework shares one present path
+        # and vsync source. The QT/GDK vars are inert for winit.
         if self.backend == "weston":
             env["WAYLAND_DISPLAY"] = WESTON_SOCKET
             env["QT_QPA_PLATFORM"] = "wayland"
@@ -409,6 +422,30 @@ class Display:
                     p.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     os.killpg(p.pid, signal.SIGKILL)
+        self.proc = None
+        self.xvfb = None
+        # Remove any stale weston socket + lock so a subsequent start()
+        # (see `restart`) can bind the same name instead of failing.
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        for suffix in ("", ".lock"):
+            try:
+                os.unlink(os.path.join(runtime_dir, WESTON_SOCKET + suffix))
+            except OSError:
+                pass
+
+    def restart(self):
+        """Tear down and relaunch the compositor from scratch. The GL
+        renderer accumulates GPU-side state across the many short-lived
+        clients a full round spawns; on a long single-compositor run the
+        heaviest later passes (egui/textview, egui/forms, gtk4/list) can
+        hit transient allocation/surface-loss failures that the same
+        binaries clear cleanly on a fresh compositor. Restarting on a
+        clean boundary (between frameworks) keeps each framework's cells
+        on a compositor that has served only a handful of clients - the
+        regime every cell passes in isolation."""
+        self.stop()
+        time.sleep(0.5)
+        self.start()
 
 
 # --------------------------------------------------------------------------
@@ -463,8 +500,11 @@ def app_popen(cmd, env):
 
 def spawn(fw_name, app, mode_args, display):
     if fw_name == "lumen":
-        cmd = [str(fw_bin("lumen", app)), "run", str(ROOT / "lumen" / app),
-               "--headless", "--size", "800x600"]
+        # Windowed: real winit window + AutoVsync present through the
+        # compositor, same as the other five. Window size comes from the
+        # app's lumen.toml [window] (800x600). No --headless (that path
+        # renders offscreen with no compositor and no vsync).
+        cmd = [str(fw_bin("lumen", app)), "run", str(ROOT / "lumen" / app)]
     else:
         cmd = [str(fw_bin(fw_name, app))] + mode_args
     return app_popen(cmd, display.app_env(fw_name))
@@ -736,8 +776,9 @@ class LumenTickSampler:
 
 def lumen_wait_first_frame(client, timeout=90.0):
     """Poll `lumen.tick` (0.5 ms cadence) until the frame counter reaches 1.
-    'First presented frame' for Lumen = first headless tick+render
-    completed, observed through the MCP frame counter."""
+    'First presented frame' for Lumen = first windowed tick+render
+    presented through the compositor, observed through the MCP frame
+    counter."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -835,11 +876,15 @@ def measure_pass_native(fw, app, mode_arg, display):
     return frame_stats(deltas), post
 
 
-def measure_pass_native_retry(fw, app, mode_arg, display, attempts=2):
-    """measure_pass_native with a one-shot retry. Under full-round load a
-    transient compositor surface loss (VK_ERROR_SURFACE_LOST_KHR) or a
-    momentarily stalled frame clock occasionally drops a single pass - the
-    same binary passes cleanly in isolation. Retry once before surfacing."""
+def measure_pass_native_retry(fw, app, mode_arg, display, attempts=3):
+    """measure_pass_native with retries. Under full-round load a transient
+    compositor surface loss (VK_ERROR_SURFACE_LOST_KHR) or a momentarily
+    stalled frame clock occasionally drops a single pass - the same binary
+    passes cleanly in isolation (verified: egui/forms, egui/textview,
+    gtk4/list all pass on a fresh GL compositor). The failure is
+    accumulated GPU-side state on the long-lived weston, so a retry on the
+    SAME compositor doesn't clear it; restart the compositor between
+    attempts to recover a genuinely wedged one before surfacing."""
     last = None
     for i in range(attempts):
         try:
@@ -847,7 +892,11 @@ def measure_pass_native_retry(fw, app, mode_arg, display, attempts=2):
         except RuntimeError as e:
             last = e
             log(f"  {fw}/{app}: pass attempt {i + 1}/{attempts} failed: {e}")
-            time.sleep(1.0)
+            if i < attempts - 1 and display.backend == "weston":
+                log(f"  {fw}/{app}: restarting compositor before retry")
+                display.restart()
+            else:
+                time.sleep(1.0)
     raise last
 
 
@@ -1239,33 +1288,47 @@ stripped binaries):
 
 Known asymmetries - read before quoting numbers:
 
-* **Lumen** runs via `lumenc run --headless` (its own offscreen wgpu
-  pipeline, demand-driven, no compositor and no vsync), while the other
-  five run windowed under a nested headless compositor with their normal
-  present paths. Lumen startup includes compiling the `.lmn/.css/.rhai`
-  sources (that is how Lumen apps launch today). Lumen's size row is the
-  generic `lumenc` runtime plus a few KB of app text. Lumen has no
-  in-app per-frame callback by design, so all Lumen numbers are external:
-  the MCP frame counter is sampled every 0.5 ms over a persistent
-  connection (reading it does not wake the parked loop; only injected
-  events do). Frame intervals are therefore quantized at ~0.5 ms, and
-  Lumen's demand-driven loop has no compositor vsync: frames land
-  against a 16.7 ms deadline anchor, so sub-16.7 p50 readings mean early
-  frames, not faster rendering - p95/p99 are the honest cross-framework
-  comparison. Scroll is driven by injected wheel events at ~60 Hz x
-  16.7 px (sensitivity 1.0, inertia 0 -> 1 wheel px = 1 scroll px).
-  The interact pass differs structurally: Tab focus-walk uses real key
-  events (like Qt/Slint), but Lumen has no externally reachable state
-  setter, so toggle steps scroll the control into view and click it -
-  real input-pipeline work (hit-testing, scrolling) that the other
-  frameworks' direct state writes do not perform. Lumen's interact
-  numbers are therefore an upper bound.
+* **Lumen** runs windowed under the same nested compositor as the other
+  five: a real winit window presenting through `weston --renderer=gl` via
+  wgpu `AutoVsync`. It shares one present path with the rest - the
+  asymmetry of the earlier offscreen `--headless` runs (no compositor at
+  all) is gone. Lumen startup includes compiling the `.lmn/.css/.rhai`
+  sources (that is how Lumen apps launch today) plus the window
+  map/first-present cost the other five also pay. Lumen's size row is the
+  generic `lumenc` runtime plus a few KB of app text. Lumen has no in-app
+  per-frame callback by design, so all Lumen numbers are external: the MCP
+  frame counter is sampled every 0.5 ms over a persistent connection
+  (reading it does not wake the parked loop; only injected events do), and
+  frame boundaries are reconstructed from counter advances (quantized at
+  ~0.5 ms). A headless compositor has no physical display refresh, so
+  wgpu's `AutoVsync` present does not reliably block - Lumen's redraw loop
+  is paced to ~60 Hz by the backend's own animation-frame deadline (a
+  no-op on a real vsync display, where the compositor is the clock; it
+  only bites when present() returns immediately, capping what would
+  otherwise be an uncapped spin). This is the same self-pacing regime the
+  other frameworks fall into under a headless compositor (Qt's 16 ms
+  timer, Slint's 8/4 ms timers): p50 sits near 16.7 ms and p95/p99 expose
+  the jitter/jank tail (visible on textview, where the ~5.7 ms tick work
+  widens it). The per-frame CPU cost is reported separately as
+  `tick_cpu_us` (real layout + paint + encode span). Scroll is driven by
+  injected wheel events at ~60 Hz x 16.7 px (sensitivity 1.0, inertia
+  0 -> 1 wheel px = 1 scroll px). The interact pass differs structurally:
+  Tab focus-walk uses real key events (like Qt/Slint), but Lumen has no
+  externally reachable state setter, so toggle steps scroll the control
+  into view and click it - real input-pipeline work (hit-testing,
+  scrolling) that the other frameworks' direct state writes do not
+  perform, so Lumen's interact numbers are an upper bound. A few toggle
+  steps near the scroll extremes (rows that cannot be centred in the
+  viewport band) do not land; the count is reported as `step_errors` and
+  those steps are omitted, not counted as frames.
 * **iced** has no virtualized list widget: the 10k rows are a plain
   `Column` in a `scrollable`, rebuilt every view pass - idiomatic iced,
-  inherently disadvantaged on the list workload and honestly so. Under
-  the headless compositor iced's redraw loop is not vsync-throttled
-  (~7 ms deltas): its scroll numbers measure raw redraw throughput, not
-  presentation cadence. Its textview lays out the full corpus each pass.
+  inherently disadvantaged on the list workload and honestly so. iced
+  renders through wgpu, so under `weston --renderer=gl` its present
+  throttles on the compositor (≈60 Hz, ~17 ms deltas) rather than
+  free-running as it did under the earlier software-renderer compositor
+  (~7 ms) - its scroll cadence now matches the other frameworks. Its
+  textview lays out the full corpus each pass.
 * **egui** is immediate-mode: the whole UI re-lays-out every frame by
   design. Its textview shapes the document into one cached galley
   (cache keyed by text+width), so scrolling costs cache lookup +
@@ -1427,8 +1490,11 @@ def write_report(results):
     L.append(f"Governors: {'/'.join(env.get('governors', []))} · "
              f"governor pin: {results.get('governor_note', '?')} · "
              f"app cpus {env.get('app_cpus')}  ")
-    L.append(f"Mesa: {env.get('mesa', '?')} · display: "
-             f"{results.get('display_backend', '?')} (nested headless) · "
+    _disp = results.get('display_backend', '?')
+    _disp_note = f"{_disp} --renderer=gl (nested headless)" if _disp == "weston" \
+        else f"{_disp} (nested headless)"
+    L.append(f"Mesa: {env.get('mesa', '?')} · display: {_disp_note} · "
+             f"all six windowed · "
              f"Lumen: {env.get('lumen_git', {}).get('sha', '?')[:12]}"
              f"{' (dirty)' if env.get('lumen_git', {}).get('dirty') else ''}")
     L.append("")
@@ -1577,7 +1643,14 @@ def measure_round(results, rnd_idx, fws, apps, display, cold=False):
     rnd["started"] = time.strftime("%Y-%m-%d %H:%M:%S %z")
     rnd["loadavg"] = _read("/proc/loadavg")
     t0 = time.monotonic()
-    for fw in fws:
+    for fw_idx, fw in enumerate(fws):
+        # Refresh the compositor at each framework boundary so GL-renderer
+        # GPU state doesn't accumulate across a full round into the
+        # transient failures that only appear late (see `Display.restart`).
+        # Skipped before the first framework - `display` is already fresh.
+        if fw_idx > 0 and display.backend == "weston":
+            log(f"--- restarting compositor before {fw} ---")
+            display.restart()
         for app in apps:
             try:
                 cell = measure_cell(fw, app, display, cold=cold)
