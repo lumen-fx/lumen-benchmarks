@@ -601,10 +601,12 @@ Known asymmetries - read before quoting numbers:
   sources (that is how Lumen apps launch today; `lumenc bundle` exists
   but the dev runner is the shipping path). Lumen's binary size row is
   the whole generic `lumenc` runtime, not an app-specific binary - the
-  app itself is a few KB of text (reported separately). Lumen currently
-  exposes **no in-app per-frame callback** (`on_tick` is documented but
-  unimplemented) and **no scroll-offset setter**, so all Lumen numbers
-  are measured externally over its MCP introspection server:
+  app itself is a few KB of text (reported separately). Lumen has
+  **no in-app per-frame callback by design** (reactive signals/events
+  only); a signal-bindable scroll offset (`bind-scroll`) exists, but a
+  constant-velocity animation still needs an external driver, so all
+  Lumen numbers are measured externally over its MCP introspection
+  server:
   "first frame" = MCP frame counter reaching 1 (polled every 2 ms);
   scroll is driven by injected wheel events at ~60 Hz x 16.7 px
   (sensitivity 1.0, inertia 0 -> 1 wheel px = 1 scroll px); scroll
@@ -613,10 +615,12 @@ Known asymmetries - read before quoting numbers:
   sampling, so fine-grained jitter is smoothed compared to the other
   frameworks' in-process timestamps. The MCP server itself
   runs during all Lumen measurements, and each MCP poll wakes the
-  demand-driven loop. `lumenc run --headless` also needs a display
-  connection for GPU discovery (it segfaults with none), so the Lumen
-  process gets DISPLAY pointed at the harness Xvfb; it still opens no
-  window.
+  demand-driven loop. Lumen's demand-driven headless loop has no
+  compositor vsync: frames land against a 16.7 ms deadline anchor, so
+  sub-16.7 p50 readings mean early frames, not faster rendering -
+  p95/p99 are the honest cross-framework comparison. The Lumen process
+  gets DISPLAY pointed at the harness Xvfb for parity with the other
+  runs; it no longer requires one (display-less headless runs work).
 * **iced** has no virtualized list widget: the 10k rows are a plain
   `Column` in a `scrollable`, rebuilt every view pass. That is the
   idiomatic iced approach; it is inherently disadvantaged on this

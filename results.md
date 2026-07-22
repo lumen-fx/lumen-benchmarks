@@ -1,17 +1,17 @@
 # Cross-framework benchmark results
 
-Generated: 2026-07-22 02:39:51 +0000  
+Generated: 2026-07-22 17:10:48 +0000  
 Host: arch 7.1.3-arch1-2  
 Display backend: weston
 
 | framework | version | binary (stripped) | startup median (external) | startup median (self) | scroll p50 | scroll p95 | scroll p99 | idle RSS |
 |---|---|---|---|---|---|---|---|---|
-| lumen | git f3f9dfb | 28317 KiB (+2.4 KiB app) | 117.3 ms | - | 9.66 ms | 19.31 ms | 19.52 ms | 139.3 MiB |
-| slint | slint 1.17.1 | 22852 KiB | 133.0 ms | 125.8 ms | 16.71 ms | 18.96 ms | 20.26 ms | 129.3 MiB |
-| egui | eframe 0.35.0 | 19459 KiB | 93.5 ms | 88.5 ms | 16.66 ms | 16.78 ms | 16.85 ms | 133.7 MiB |
-| iced | iced 0.13.1 | 14706 KiB | 224.6 ms | 201.8 ms | 7.18 ms | 8.01 ms | 9.10 ms | 194.6 MiB |
-| qt-widgets | Qt6Widgets 6.11.1 | 276 KiB | 41.1 ms | 26.4 ms | 15.80 ms | 16.75 ms | 17.01 ms | 38.6 MiB |
-| gtk4 | gtk4 4.22.4 | 19 KiB | 155.9 ms | 127.3 ms | 16.69 ms | 18.40 ms | 19.81 ms | 172.0 MiB |
+| lumen | git d220a72 | 27640 KiB (+2.4 KiB app) | 78.4 ms | - | 16.78 ms | 17.69 ms | 18.23 ms | 209.0 MiB |
+| slint | slint 1.17.1 | 22852 KiB | 133.1 ms | 125.6 ms | 16.61 ms | 18.68 ms | 19.38 ms | 189.6 MiB |
+| egui | eframe 0.35.0 | 19459 KiB | 92.7 ms | 87.3 ms | 16.67 ms | 16.79 ms | 16.90 ms | 190.2 MiB |
+| iced | iced 0.13.1 | 14706 KiB | 212.8 ms | 190.8 ms | 6.70 ms | 8.21 ms | 9.65 ms | 265.9 MiB |
+| qt-widgets | Qt6Widgets 6.11.1 | 276 KiB | 33.3 ms | 20.9 ms | 15.74 ms | 16.74 ms | 16.85 ms | 40.7 MiB |
+| gtk4 | gtk4 4.22.4 | 19 KiB | 145.6 ms | 121.6 ms | 16.67 ms | 17.87 ms | 19.21 ms | 231.7 MiB |
 
 ## Fairness / equivalence caveats
 
@@ -44,10 +44,9 @@ Known asymmetries - read before quoting numbers:
   frameworks' in-process timestamps. The MCP server itself
   runs during all Lumen measurements, and each MCP poll wakes the
   demand-driven loop. Lumen's demand-driven headless loop has no
-  compositor vsync: frames land when work is ready against a 16.7 ms
-  deadline anchor, so its scroll p50 (frames arriving early) is not
-  directly comparable to the compositor-paced frameworks - p95/p99 are
-  the honest cross-framework comparison for Lumen. The Lumen process
+  compositor vsync: frames land against a 16.7 ms deadline anchor, so
+  sub-16.7 p50 readings mean early frames, not faster rendering -
+  p95/p99 are the honest cross-framework comparison. The Lumen process
   gets DISPLAY pointed at the harness Xvfb for parity with the other
   runs; it no longer requires one (display-less headless runs work).
 * **iced** has no virtualized list widget: the 10k rows are a plain
@@ -75,6 +74,11 @@ Known asymmetries - read before quoting numbers:
   Rust apps statically link their framework; **Qt** and **GTK4** sizes
   exclude the dynamically linked toolkit libraries (libQt6*/libgtk-4)
   that must be present on the target system.
+* Idle RSS rose ~60-70 MiB for EVERY GPU framework between the 02:39
+  and 17:10 runs (Slint 129->190, egui 133->190, GTK4 172->232, iced
+  195->266, Lumen 139->209) with Qt (raster) flat - a host environment
+  shift (driver/compositor allocation), not a framework change. Compare
+  RSS within a run, not across runs.
 * Startup runs are warm-cache (no page-cache eviction between runs);
   "cold start" claims should not be made from these numbers.
 * startup(external) includes Python's process-spawn overhead and pipe
