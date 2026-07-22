@@ -1,17 +1,17 @@
 # Cross-framework benchmark results
 
-Generated: 2026-07-21 22:12:59 +0000  
+Generated: 2026-07-22 02:39:51 +0000  
 Host: arch 7.1.3-arch1-2  
 Display backend: weston
 
 | framework | version | binary (stripped) | startup median (external) | startup median (self) | scroll p50 | scroll p95 | scroll p99 | idle RSS |
 |---|---|---|---|---|---|---|---|---|
-| lumen | git f2b4de6 | 29667 KiB (+2.4 KiB app) | 341.4 ms | - | 18.80 ms | 19.33 ms | 19.58 ms | 141.6 MiB |
-| slint | slint 1.17.1 | 22852 KiB | 124.7 ms | 117.3 ms | 16.60 ms | 18.80 ms | 20.07 ms | 129.1 MiB |
-| egui | eframe 0.35.0 | 19459 KiB | 54.4 ms | 52.6 ms | 16.66 ms | 16.79 ms | 16.83 ms | 132.9 MiB |
-| iced | iced 0.13.1 | 14706 KiB | 219.9 ms | 198.4 ms | 6.94 ms | 7.99 ms | 9.02 ms | 193.7 MiB |
-| qt-widgets | Qt6Widgets 6.11.1 | 276 KiB | 36.9 ms | 20.7 ms | 15.78 ms | 16.76 ms | 16.94 ms | 38.4 MiB |
-| gtk4 | gtk4 4.22.4 | 19 KiB | 171.4 ms | 131.9 ms | 16.66 ms | 18.02 ms | 19.39 ms | 172.3 MiB |
+| lumen | git f3f9dfb | 28317 KiB (+2.4 KiB app) | 117.3 ms | - | 9.66 ms | 19.31 ms | 19.52 ms | 139.3 MiB |
+| slint | slint 1.17.1 | 22852 KiB | 133.0 ms | 125.8 ms | 16.71 ms | 18.96 ms | 20.26 ms | 129.3 MiB |
+| egui | eframe 0.35.0 | 19459 KiB | 93.5 ms | 88.5 ms | 16.66 ms | 16.78 ms | 16.85 ms | 133.7 MiB |
+| iced | iced 0.13.1 | 14706 KiB | 224.6 ms | 201.8 ms | 7.18 ms | 8.01 ms | 9.10 ms | 194.6 MiB |
+| qt-widgets | Qt6Widgets 6.11.1 | 276 KiB | 41.1 ms | 26.4 ms | 15.80 ms | 16.75 ms | 17.01 ms | 38.6 MiB |
+| gtk4 | gtk4 4.22.4 | 19 KiB | 155.9 ms | 127.3 ms | 16.69 ms | 18.40 ms | 19.81 ms | 172.0 MiB |
 
 ## Fairness / equivalence caveats
 
@@ -29,10 +29,12 @@ Known asymmetries - read before quoting numbers:
   sources (that is how Lumen apps launch today; `lumenc bundle` exists
   but the dev runner is the shipping path). Lumen's binary size row is
   the whole generic `lumenc` runtime, not an app-specific binary - the
-  app itself is a few KB of text (reported separately). Lumen currently
-  exposes **no in-app per-frame callback** (`on_tick` is documented but
-  unimplemented) and **no scroll-offset setter**, so all Lumen numbers
-  are measured externally over its MCP introspection server:
+  app itself is a few KB of text (reported separately). Lumen has
+  **no in-app per-frame callback by design** (reactive signals/events
+  only); a signal-bindable scroll offset (`bind-scroll`) exists, but a
+  constant-velocity animation still needs an external driver, so all
+  Lumen numbers are measured externally over its MCP introspection
+  server:
   "first frame" = MCP frame counter reaching 1 (polled every 2 ms);
   scroll is driven by injected wheel events at ~60 Hz x 16.7 px
   (sensitivity 1.0, inertia 0 -> 1 wheel px = 1 scroll px); scroll
@@ -41,10 +43,13 @@ Known asymmetries - read before quoting numbers:
   sampling, so fine-grained jitter is smoothed compared to the other
   frameworks' in-process timestamps. The MCP server itself
   runs during all Lumen measurements, and each MCP poll wakes the
-  demand-driven loop. `lumenc run --headless` also needs a display
-  connection for GPU discovery (it segfaults with none), so the Lumen
-  process gets DISPLAY pointed at the harness Xvfb; it still opens no
-  window.
+  demand-driven loop. Lumen's demand-driven headless loop has no
+  compositor vsync: frames land when work is ready against a 16.7 ms
+  deadline anchor, so its scroll p50 (frames arriving early) is not
+  directly comparable to the compositor-paced frameworks - p95/p99 are
+  the honest cross-framework comparison for Lumen. The Lumen process
+  gets DISPLAY pointed at the harness Xvfb for parity with the other
+  runs; it no longer requires one (display-less headless runs work).
 * **iced** has no virtualized list widget: the 10k rows are a plain
   `Column` in a `scrollable`, rebuilt every view pass. That is the
   idiomatic iced approach; it is inherently disadvantaged on this
