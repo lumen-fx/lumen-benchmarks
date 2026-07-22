@@ -1,6 +1,5 @@
 /qt-widgets/build/
 /gtk4/build/
 /harness/out/
-Cargo.lock
 target/
 __pycache__/
