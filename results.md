@@ -1,9 +1,9 @@
 # Cross-framework benchmark results
 
-Generated: 2026-07-22 18:27:02 +0000  
+Generated: 2026-07-22 18:54:11 +0000  
 Host: arch · kernel 7.1.3-arch1-2 · 12th Gen Intel(R) Core(TM) i9-12900K (24 cpus)  
 Governors: powersave · governor pin: not permitted (wanted 'performance'; left as-is on cpus [4, 5, 6, 7, 8, 9, 10, 11]) · app cpus [4, 5, 6, 7, 8, 9, 10, 11]  
-Mesa: mesa 1:26.1.4-1 · display: weston (nested headless) · Lumen: 93088f1f5d27 (dirty)
+Mesa: mesa 1:26.1.4-1 · display: weston (nested headless) · Lumen: 4ad458af11da
 
 Primary numbers below are **round 0**; the run-to-run agreement table compares round 0 vs round 1. Values are medians; ± is half the IQR (startup, n=15) or half the cross-pass spread (frame percentiles, 3 passes). ⚠ = unstable (IQR/median > 5%); (No) = N Tukey outliers retained. Memory is PSS in MiB with RSS in parentheses (both from /proc, idle = first frame + 2 s).
 
@@ -11,12 +11,12 @@ Primary numbers below are **round 0**; the run-to-run agreement table compares r
 
 | framework | version | binary (stripped) | startup ext ms | startup self ms | PSS idle MiB (RSS) | PSS @5 s |
 |---|---|---|---|---|---|---|
-| lumen | git 93088f1 | 20.0 MiB rt +0.7 KiB app | 73.2 ±5.9 ⚠ | - | 67.3 (182.4) | 67.4 (182.4) |
-| slint | slint 1.17.1 | 19.4 MiB | - | - | - | - |
-| egui | eframe 0.35.0 | 18.8 MiB | - | - | - | - |
-| iced | iced 0.13.1 | 14.2 MiB | - | - | - | - |
-| qt-widgets | Qt6Widgets 6.11.1 | 0.2 MiB | - | - | - | - |
-| gtk4 | gtk4 4.22.4 | 0.0 MiB | 125.6 ±3.6 ⚠ (1o) | 102.0 ±2.4 | 104.8 (225.5) | 104.8 (225.5) |
+| lumen | git 93088f1 | 20.1 MiB rt +0.7 KiB app | 74.5 ±6.1 ⚠ | - | 72.2 (182.4) | 72.2 (182.4) |
+| slint | slint 1.17.1 | 19.4 MiB | 83.4 ±6.2 ⚠ | 76.4 ±6.0 ⚠ | 71.3 (182.1) | 71.3 (182.1) |
+| egui | eframe 0.35.0 | 18.8 MiB | 83.2 ±4.2 ⚠ (1o) | 77.5 ±4.2 ⚠ (1o) | 81.1 (187.4) | 81.1 (187.4) |
+| iced | iced 0.13.1 | 14.3 MiB | 93.1 ±10.7 ⚠ | 85.1 ±10.5 ⚠ | 64.9 (168.4) | 64.9 (168.4) |
+| qt-widgets | Qt6Widgets 6.11.1 | 0.2 MiB | 36.8 ±7.4 ⚠ | 16.1 ±2.9 ⚠ | 23.1 (39.3) | 23.1 (39.3) |
+| gtk4 | gtk4 4.22.4 | 0.0 MiB | 131.9 ±8.3 ⚠ | 101.6 ±0.9 (1o) | 104.8 (225.5) | 104.8 (225.5) |
 
 ## forms - ~40-widget settings page
 
@@ -24,34 +24,41 @@ Interact pass = 4 cycles x (40-step focus walk + 20-step toggle-all), one step p
 
 | framework | binary | startup ext ms | interact p50 ms | interact p95 ms | interact p99 ms | PSS idle (RSS) | PSS post |
 |---|---|---|---|---|---|---|---|
-| lumen | 20.0 MiB rt +9.3 KiB app | 69.8 ±5.8 ⚠ | 15.57 ±0.02 | 16.85 ±0.07 | 17.13 ±0.05 | 77.3 (187.6) | 79.9 (191.4) |
-| slint | 23.6 MiB | 119.6 ±11.9 ⚠ (1o) | 16.60 ±0.17 | 22.92 ±0.27 | 24.32 ±0.68 | 80.3 (188.9) | 83.8 (193.0) |
-| egui | 19.1 MiB | 83.8 ±8.5 ⚠ (2o) | 16.67 ±0.00 | 16.74 ±0.01 | 16.78 ±0.01 | 84.7 (191.2) | 83.8 (190.1) |
-| iced | 14.5 MiB | 106.2 ±5.9 ⚠ (1o) | 16.00 ±0.00 | 20.01 ±0.00 | 20.02 ±0.02 | 66.5 (170.2) | 65.5 (170.1) |
-| qt-widgets | 0.3 MiB | 35.1 ±6.1 ⚠ | 15.79 ±0.05 | 16.94 ±1.38 | 19.74 ±1.33 | 24.7 (41.9) | 25.7 (43.9) |
-| gtk4 | 0.0 MiB | 142.2 ±5.5 ⚠ | 16.68 ±0.01 | 19.69 ±0.32 | 20.88 ±0.45 | 108.9 (231.7) | 112.5 (235.5) |
+| lumen | 20.1 MiB rt +9.3 KiB app | 77.8 ±4.0 ⚠ | 14.04 ±0.33 | 16.64 ±0.15 | 17.03 ±0.02 | 77.1 (187.5) | 80.1 (191.5) |
+| slint | 23.6 MiB | 85.6 ±0.5 (1o) | 16.66 ±0.00 | 17.08 ±0.37 | 17.70 ±1.06 | 79.9 (188.5) | 84.2 (193.0) |
+| egui | 19.1 MiB | 91.5 ±6.5 ⚠ (2o) | 16.66 ±0.00 | 16.75 ±0.04 | 16.79 ±0.94 | 82.8 (189.1) | 82.9 (189.3) |
+| iced | 14.6 MiB | 94.3 ±20.7 ⚠ | 16.00 ±0.00 | 20.01 ±0.00 | 20.02 ±0.03 | 66.2 (169.7) | 65.1 (169.7) |
+| qt-widgets | 0.3 MiB | 30.9 ±5.9 ⚠ (1o) | - | - | - | 25.7 (41.8) | 25.7 (41.9) |
+| gtk4 | 0.0 MiB | 144.3 ±5.3 ⚠ | 16.65 ±0.01 | 19.98 ±1.19 | 21.89 ±1.00 | 111.0 (231.9) | 113.1 (233.7) |
 
 ## list - 10,000-row list scrolled at 1000 px/s
 
 | framework | binary | startup ext ms | scroll p50 ms | scroll p95 ms | scroll p99 ms | PSS idle (RSS) | PSS post |
 |---|---|---|---|---|---|---|---|
-| lumen | 20.0 MiB rt +2.4 KiB app | 86.4 ±4.9 ⚠ | 16.54 ±0.01 | 17.52 ±0.01 | 17.94 ±0.21 | 92.8 (203.1) | 88.0 (203.1) |
-| slint | 22.3 MiB | - | - | - | - | - | - |
-| egui | 19.0 MiB | - | - | - | - | - | - |
-| iced | 14.4 MiB | - | - | - | - | - | - |
-| qt-widgets | 0.3 MiB | - | - | - | - | - | - |
-| gtk4 | 0.0 MiB | - | - | - | - | - | - |
+| lumen | 20.1 MiB rt +2.4 KiB app | 84.1 ±5.8 ⚠ | 16.55 ±0.02 | 17.54 ±0.01 | 17.98 ±0.21 | 93.0 (203.4) | 93.1 (203.4) |
+| slint | 22.3 MiB | 94.2 ±4.4 ⚠ (1o) | 16.71 ±0.03 | 18.87 ±0.57 | 19.42 ±0.35 | 78.1 (186.6) | 79.5 (187.9) |
+| egui | 19.0 MiB | 83.6 ±8.6 ⚠ | 16.67 ±0.00 | 16.75 ±0.00 | 16.79 ±0.02 | 81.8 (188.1) | 81.8 (188.1) |
+| iced | 14.5 MiB | 193.0 ±6.6 ⚠ | 7.00 ±0.04 | 7.86 ±0.13 | 9.09 ±0.16 | 159.3 (264.0) | 159.2 (263.7) |
+| qt-widgets | 0.3 MiB | 36.2 ±4.5 ⚠ (1o) | 15.85 ±0.04 | 17.71 ±0.46 | 17.71 ±0.03 | 24.5 (40.6) | 24.6 (40.7) |
+| gtk4 | 0.0 MiB | 149.7 ±2.8 (3o) | 16.68 ±0.02 | 17.79 ±0.21 | 18.63 ±0.26 | 110.6 (231.4) | 113.4 (234.2) |
 
 ## textview - 5,000 wrapped paragraphs (~1.1 MiB) scrolled at 1000 px/s
 
 | framework | binary | startup ext ms | scroll p50 ms | scroll p95 ms | scroll p99 ms | PSS idle (RSS) | PSS post |
 |---|---|---|---|---|---|---|---|
-| lumen | 20.0 MiB rt +1367.8 KiB app | 1346.6 ±4.2 (2o) | 16.68 ±0.04 | 18.51 ±0.15 | 19.50 ±0.14 | 120.9 (231.4) | 121.3 (231.6) |
-| slint | 19.3 MiB | 1152.8 ±4.9 | 194.92 ±0.66 | 196.84 ±1.44 | 197.97 ±0.69 | 365.5 (472.2) | 373.0 (479.7) |
-| egui | 18.8 MiB | 281.0 ±3.2 (1o) | 16.66 ±0.00 | 16.75 ±0.01 | 16.78 ±0.01 | 287.1 (391.2) | 287.3 (391.3) |
-| iced | 14.2 MiB | 1027.2 ±5.7 (3o) | 350.85 ±2.15 | 358.17 ±0.49 | 359.13 ±0.76 | 383.5 (488.0) | 383.8 (488.3) |
-| qt-widgets | 0.3 MiB | 28.7 ±0.7 (3o) | 15.82 ±0.03 | 16.76 ±0.01 | 27.39 ±0.22 | 91.3 (109.4) | 91.4 (109.5) |
-| gtk4 | 0.0 MiB | 147.2 ±7.4 ⚠ | 16.75 ±0.08 | 20.02 ±0.28 | 21.67 ±0.69 | 100.5 (227.5) | 105.5 (232.7) |
+| lumen | 20.1 MiB rt +1367.8 KiB app | 1491.7 ±7.4 (1o) | 16.67 ±0.15 | 17.94 ±10.34 | 24.56 ±30.10 | 122.8 (233.1) | 122.4 (232.8) |
+| slint | 19.3 MiB | 1158.2 ±13.2 | 197.31 ±2.42 | 198.41 ±2.61 | 200.26 ±3.28 | 363.3 (471.9) | 370.8 (479.3) |
+| egui | 18.8 MiB | 281.6 ±4.3 (1o) | 16.66 ±0.00 | 16.76 ±0.01 | 16.80 ±0.01 | 284.2 (390.5) | 284.5 (390.4) |
+| iced | 14.4 MiB | 1024.6 ±8.4 (2o) | 356.58 ±5.64 | 360.13 ±5.26 | 360.16 ±57.57 | 383.4 (487.8) | 385.1 (488.0) |
+| qt-widgets | 0.3 MiB | 46.8 ±7.2 ⚠ | 16.31 ±0.73 | 32.42 ±6.72 | 32.42 ±6.72 | 93.2 (109.3) | 91.4 (107.5) |
+| gtk4 | 0.0 MiB | 138.1 ±7.5 ⚠ | 16.66 ±0.02 | 19.09 ±0.21 | 21.00 ±0.10 | 106.8 (227.5) | 111.7 (232.4) |
+
+## Calibration - bounding systematic error
+
+* spawn->marker floor (trivial C binary, n=30): **3.41 ±0.16 ⚠ ms** - harness+fork/exec overhead baked identically into every external startup number.
+* harness-vs-kernel spawn timestamp (independent, /proc starttime): **-1.42 ±0.07 (5o) ms** - bounds the harness's spawn-anchor error.
+* marker pipe latency (app clock vs harness clock): **0.09 ±0.01 ⚠ (4o) ms** - bounds marker-arrival skew.
+* Consequence: cross-framework startup deltas below ~1 ms are inside the systematic error band and not meaningful.
 
 ### Clock sources
 

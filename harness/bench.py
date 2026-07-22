@@ -835,6 +835,22 @@ def measure_pass_native(fw, app, mode_arg, display):
     return frame_stats(deltas), post
 
 
+def measure_pass_native_retry(fw, app, mode_arg, display, attempts=2):
+    """measure_pass_native with a one-shot retry. Under full-round load a
+    transient compositor surface loss (VK_ERROR_SURFACE_LOST_KHR) or a
+    momentarily stalled frame clock occasionally drops a single pass - the
+    same binary passes cleanly in isolation. Retry once before surfacing."""
+    last = None
+    for i in range(attempts):
+        try:
+            return measure_pass_native(fw, app, mode_arg, display)
+        except RuntimeError as e:
+            last = e
+            log(f"  {fw}/{app}: pass attempt {i + 1}/{attempts} failed: {e}")
+            time.sleep(1.0)
+    raise last
+
+
 def measure_idle_mem_native(fw, app, display):
     proc = spawn(fw, app, [], display)
     reader = LineReader(proc.stdout)
@@ -1098,7 +1114,7 @@ def measure_cell(fw, app, display, cold=False):
             if fw == "lumen":
                 st, post = measure_scroll_pass_lumen(app, display)
             else:
-                st, post = measure_pass_native(fw, app, "--scroll-bench", display)
+                st, post = measure_pass_native_retry(fw, app, "--scroll-bench", display)
             passes.append(st)
             post_mems.append(post)
             time.sleep(0.5)
@@ -1111,7 +1127,7 @@ def measure_cell(fw, app, display, cold=False):
             if fw == "lumen":
                 st, post = measure_interact_pass_lumen(display)
             else:
-                st, post = measure_pass_native(fw, app, "--interact", display)
+                st, post = measure_pass_native_retry(fw, app, "--interact", display)
             passes.append(st)
             post_mems.append(post)
             time.sleep(0.5)
@@ -1563,8 +1579,15 @@ def measure_round(results, rnd_idx, fws, apps, display, cold=False):
     t0 = time.monotonic()
     for fw in fws:
         for app in apps:
-            rnd["cells"].setdefault(fw, {})[app] = \
-                measure_cell(fw, app, display, cold=cold)
+            try:
+                cell = measure_cell(fw, app, display, cold=cold)
+            except Exception as e:
+                # One framework/app must never sink the whole round. Record
+                # the failure on the cell (renders as "-") and press on.
+                log(f"!!! {fw}/{app}: cell failed, recording N/A and "
+                    f"continuing: {e}")
+                cell = {"error": str(e)}
+            rnd["cells"].setdefault(fw, {})[app] = cell
             write_report(results)
     rnd["wall_s"] = round(time.monotonic() - t0, 1)
     log(f"round {rnd_idx} wall time: {rnd['wall_s']} s")
