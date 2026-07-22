@@ -7,5 +7,7 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
-add_executable(bench_qt main.cpp)
-target_link_libraries(bench_qt PRIVATE Qt6::Widgets)
+foreach(app hello list forms textview)
+    add_executable(bench_qt_${app} ${app}.cpp)
+    target_link_libraries(bench_qt_${app} PRIVATE Qt6::Widgets)
+endforeach()

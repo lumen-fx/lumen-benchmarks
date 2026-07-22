@@ -1,4 +1,5 @@
-// Bench app - Qt6 Widgets variant. See repo README for the shared spec.
+// Bench list app - Qt6 Widgets variant. See repo README for the shared
+// spec (header + 10k-row virtualized list + footer).
 //
 // List: QListView + QAbstractListModel + QStyledItemDelegate (the
 // idiomatic virtualized path), per-pixel scrolling.
@@ -10,29 +11,14 @@
 
 #include <QtWidgets>
 
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
 #include <functional>
 #include <vector>
 
-using Clock = std::chrono::steady_clock;
+#include "bench_common.h"
 
 static constexpr int kRows = 10000;
 static constexpr int kRowH = 36;
 static constexpr double kSpeed = 1000.0; // px/s
-static constexpr double kDurationS = 10.0;
-
-static double bounce(double dist, double max) {
-    if (max <= 0.0) return 0.0;
-    const double period = 2.0 * max;
-    double m = std::fmod(dist, period);
-    return m < max ? m : period - m;
-}
-
-static double msBetween(Clock::time_point a, Clock::time_point b) {
-    return std::chrono::duration<double, std::milli>(b - a).count();
-}
 
 class BenchModel : public QAbstractListModel {
 public:
@@ -110,10 +96,10 @@ int main(int argc, char **argv) {
     const Clock::time_point t0 = Clock::now();
 
     QApplication app(argc, argv);
-    QString mode;
-    if (argc > 1) mode = QString::fromLocal8Bit(argv[1]);
-    const bool modeStartup = (mode == QLatin1String("--startup"));
-    const bool modeScroll = (mode == QLatin1String("--scroll-bench"));
+    const Mode mode = parseMode(argc, argv);
+    const bool modeStartup = (mode == Mode::Startup);
+    const bool modeScroll = (mode == Mode::ScrollBench);
+    const double durationS = scrollSeconds();
 
     BenchWindow w;
     w.setWindowTitle(QStringLiteral("Bench"));
@@ -193,23 +179,15 @@ int main(int argc, char **argv) {
     Clock::time_point scrollStart;
 
     QObject::connect(scrollTimer, &QTimer::timeout,
-                     [list, recorder, scrollTimer, &scrollStart] {
+                     [list, recorder, scrollTimer, &scrollStart, durationS] {
         const double elapsed =
             std::chrono::duration<double>(Clock::now() - scrollStart).count();
-        if (elapsed >= kDurationS) {
+        if (elapsed >= durationS) {
             scrollTimer->stop();
             recorder->recording = false;
-            QString out;
-            for (size_t i = 1; i < recorder->frames.size(); ++i)
-                out += QString::number(
-                           msBetween(recorder->frames[i - 1],
-                                     recorder->frames[i]),
-                           'f', 3) +
-                       QLatin1Char('\n');
-            out += QLatin1String("done\n");
-            std::fputs(out.toUtf8().constData(), stdout);
-            std::fflush(stdout);
-            std::exit(0);
+            // Stay alive for the post-run memory sample.
+            printDeltasDone(recorder->frames);
+            return;
         }
         auto *bar = list->verticalScrollBar();
         bar->setValue(
@@ -219,12 +197,9 @@ int main(int argc, char **argv) {
     w.onFirstPaint = [t0, modeStartup, modeScroll, recorder, scrollTimer,
                       &scrollStart] {
         const Clock::time_point now = Clock::now();
-        std::puts("first_frame");
-        std::fflush(stdout);
+        printFirstFrame();
         if (modeStartup) {
-            std::printf("startup_ms: %.3f\n", msBetween(t0, now));
-            std::fflush(stdout);
-            std::exit(0);
+            printStartupAndExit(t0, now);
         }
         if (modeScroll) {
             scrollStart = now;

@@ -1,4 +1,5 @@
-/* Bench app - GTK4 (C) variant. See repo README for the shared spec.
+/* Bench list app - GTK4 (C) variant. See repo README for the shared
+ * spec (header + 10k-row virtualized GtkListView + footer).
  *
  * List: GtkListView + GtkStringList + GtkSignalListItemFactory (the
  * idiomatic virtualized path).
@@ -12,18 +13,19 @@
 #include <gtk/gtk.h>
 
 #include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+
+#include "bench_common.h"
 
 #define ROWS 10000
 #define ROW_H 36
 #define SPEED 1000.0 /* px/s */
-#define DURATION_S 10.0
+
+static double duration_s = 6.0;
 
 static gint64 t0_us;
 static gboolean mode_startup = FALSE;
 static gboolean mode_scroll = FALSE;
+static gboolean reported = FALSE;
 
 static gboolean first_frame_seen = FALSE;
 static gint64 scroll_start_us = 0;
@@ -31,41 +33,18 @@ static GArray *frame_times = NULL; /* gint64, CLOCK_MONOTONIC us */
 static GtkAdjustment *vadj = NULL;
 static int count = 0;
 
-static double bounce(double dist, double max) {
-    if (max <= 0.0) return 0.0;
-    double period = 2.0 * max;
-    double m = fmod(dist, period);
-    return m < max ? m : period - m;
-}
-
-static void dump_and_exit(void) {
-    for (guint i = 1; i < frame_times->len; i++) {
-        gint64 a = g_array_index(frame_times, gint64, i - 1);
-        gint64 b = g_array_index(frame_times, gint64, i);
-        printf("%.3f\n", (double)(b - a) / 1000.0);
-    }
-    printf("done\n");
-    fflush(stdout);
-    exit(0);
-}
-
 static void on_after_paint(GdkFrameClock *clock, gpointer data) {
     (void)clock;
     (void)data;
     gint64 now = g_get_monotonic_time();
     if (!first_frame_seen) {
         first_frame_seen = TRUE;
-        printf("first_frame\n");
-        fflush(stdout);
-        if (mode_startup) {
-            printf("startup_ms: %.3f\n", (double)(now - t0_us) / 1000.0);
-            fflush(stdout);
-            exit(0);
-        }
+        bench_print_first_frame();
+        if (mode_startup) bench_print_startup_and_exit(t0_us, now);
         scroll_start_us = now;
         return;
     }
-    if (mode_scroll) g_array_append_val(frame_times, now);
+    if (mode_scroll && !reported) g_array_append_val(frame_times, now);
 }
 
 static gboolean on_tick(GtkWidget *widget, GdkFrameClock *clock,
@@ -73,13 +52,18 @@ static gboolean on_tick(GtkWidget *widget, GdkFrameClock *clock,
     (void)widget;
     (void)clock;
     (void)data;
-    if (!mode_scroll || !first_frame_seen) return G_SOURCE_CONTINUE;
+    if (!mode_scroll || !first_frame_seen || reported) return G_SOURCE_CONTINUE;
     gint64 now = g_get_monotonic_time();
     double elapsed = (double)(now - scroll_start_us) / 1e6;
-    if (elapsed >= DURATION_S) dump_and_exit();
+    if (elapsed >= duration_s) {
+        /* Stay alive for the post-run memory sample. */
+        bench_print_deltas_done(frame_times);
+        reported = TRUE;
+        return G_SOURCE_CONTINUE;
+    }
     double max =
         gtk_adjustment_get_upper(vadj) - gtk_adjustment_get_page_size(vadj);
-    gtk_adjustment_set_value(vadj, bounce(SPEED * elapsed, max));
+    gtk_adjustment_set_value(vadj, bench_bounce(SPEED * elapsed, max));
     return G_SOURCE_CONTINUE;
 }
 
@@ -223,10 +207,10 @@ static void activate(GtkApplication *app, gpointer data) {
 
 int main(int argc, char **argv) {
     t0_us = g_get_monotonic_time();
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--startup") == 0) mode_startup = TRUE;
-        else if (strcmp(argv[i], "--scroll-bench") == 0) mode_scroll = TRUE;
-    }
+    BenchMode mode = bench_parse_mode(argc, argv);
+    mode_startup = (mode == BENCH_MODE_STARTUP);
+    mode_scroll = (mode == BENCH_MODE_SCROLL);
+    duration_s = bench_scroll_seconds();
     frame_times = g_array_sized_new(FALSE, FALSE, sizeof(gint64), 4096);
 
     GtkApplication *app =

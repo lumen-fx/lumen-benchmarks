@@ -1,5 +1,5 @@
-//! Bench app - Slint variant (winit backend). See repo README for the
-//! shared spec.
+//! Bench list app - Slint variant (winit backend). See repo README for
+//! the shared spec (header + 10k-row virtualized ListView + footer).
 //!
 //! First-presented-frame: the window's rendering notifier at
 //! `RenderingState::AfterRendering` (the frame has been submitted).
@@ -8,42 +8,23 @@
 //! from the rendering notifier, so timer granularity does not affect
 //! the frame-delta measurement.
 
-use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use bench_slint_common::{bounce, parse_mode, print_deltas_done, print_first_frame,
+                         print_startup_and_exit, scroll_seconds, Mode};
 use slint::{ComponentHandle, VecModel};
 
 slint::include_modules!();
 
 const ROWS: i32 = 10_000;
 const SPEED: f32 = 1000.0; // px/s
-const DURATION_S: f32 = 10.0;
-
-#[derive(Clone, Copy, PartialEq)]
-enum Mode {
-    Default,
-    Startup,
-    ScrollBench,
-}
-
-fn bounce(dist: f32, max: f32) -> f32 {
-    if max <= 0.0 {
-        return 0.0;
-    }
-    let period = 2.0 * max;
-    let m = dist % period;
-    if m < max { m } else { period - m }
-}
 
 fn main() {
     let t0 = Instant::now();
-    let mode = match std::env::args().nth(1).as_deref() {
-        Some("--startup") => Mode::Startup,
-        Some("--scroll-bench") => Mode::ScrollBench,
-        _ => Mode::Default,
-    };
+    let mode = parse_mode();
+    let duration_s = scroll_seconds();
 
     let ui = BenchWindow::new().unwrap();
 
@@ -62,25 +43,23 @@ fn main() {
     let frames: Arc<Mutex<Vec<Instant>>> = Arc::new(Mutex::new(Vec::with_capacity(4096)));
     let first_seen = Arc::new(AtomicBool::new(false));
     let first_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let reported = Arc::new(AtomicBool::new(false));
 
     {
         let frames = frames.clone();
         let first_seen = first_seen.clone();
         let first_at = first_at.clone();
+        let reported = reported.clone();
         let notifier_result = ui.window().set_rendering_notifier(move |state, _| {
             if matches!(state, slint::RenderingState::AfterRendering) {
                 let now = Instant::now();
                 if !first_seen.swap(true, Ordering::SeqCst) {
                     *first_at.lock().unwrap() = Some(now);
-                    println!("first_frame");
-                    std::io::stdout().flush().ok();
+                    print_first_frame();
                     if mode == Mode::Startup {
-                        let ms = now.duration_since(t0).as_secs_f64() * 1000.0;
-                        println!("startup_ms: {ms:.3}");
-                        std::io::stdout().flush().ok();
-                        std::process::exit(0);
+                        print_startup_and_exit(t0, now);
                     }
-                } else if mode == Mode::ScrollBench {
+                } else if mode == Mode::ScrollBench && !reported.load(Ordering::SeqCst) {
                     frames.lock().unwrap().push(now);
                 }
             }
@@ -96,26 +75,23 @@ fn main() {
         let weak = ui.as_weak();
         let frames = frames.clone();
         let first_at = first_at.clone();
+        let reported = reported.clone();
         timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(8),
             move || {
+                if reported.load(Ordering::SeqCst) {
+                    return;
+                }
                 let Some(start) = *first_at.lock().unwrap() else {
                     return;
                 };
                 let ui = weak.unwrap();
                 let elapsed = start.elapsed().as_secs_f32();
-                if elapsed >= DURATION_S {
-                    let frames = frames.lock().unwrap();
-                    let mut out = String::new();
-                    for pair in frames.windows(2) {
-                        let ms = (pair[1] - pair[0]).as_secs_f64() * 1000.0;
-                        out.push_str(&format!("{ms:.3}\n"));
-                    }
-                    out.push_str("done\n");
-                    print!("{out}");
-                    std::io::stdout().flush().ok();
-                    std::process::exit(0);
+                if elapsed >= duration_s {
+                    print_deltas_done(&frames.lock().unwrap());
+                    reported.store(true, Ordering::SeqCst);
+                    return; // stay alive for post-run memory sample
                 }
                 let max = (ui.get_content_h() - ui.get_visible_h()).max(0.0);
                 let pos = bounce(SPEED * elapsed, max);

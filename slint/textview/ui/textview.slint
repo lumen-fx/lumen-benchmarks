@@ -1,0 +1,33 @@
+export component TextViewWindow inherits Window {
+    title: "Bench";
+    width: 800px;
+    height: 600px;
+
+    in property <string> corpus;
+    in-out property <length> vy <=> fl.viewport-y;
+    out property <length> visible-h: fl.height;
+    out property <length> content-h: fl.viewport-height;
+
+    VerticalLayout {
+        HorizontalLayout {
+            height: 48px;
+            padding: 8px;
+            Text {
+                text: "Bench";
+                font-size: 18px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+        fl := Flickable {
+            viewport-height: txt.preferred-height + 16px;
+            txt := Text {
+                x: 8px;
+                y: 8px;
+                width: fl.width - 16px;
+                text: root.corpus;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

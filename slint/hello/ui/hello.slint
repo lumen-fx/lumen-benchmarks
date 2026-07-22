@@ -1,0 +1,22 @@
+import { Button } from "std-widgets.slint";
+
+export component HelloWindow inherits Window {
+    title: "Bench";
+    width: 800px;
+    height: 600px;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 12px;
+        Text {
+            text: "Hello";
+            font-size: 18px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Button { text: "Press"; }
+        }
+    }
+}

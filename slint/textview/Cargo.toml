@@ -1,0 +1,11 @@
+[package]
+name = "bench-slint-textview"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+slint = { workspace = true }
+bench-slint-common = { path = "../common" }
+
+[build-dependencies]
+slint-build = { workspace = true }

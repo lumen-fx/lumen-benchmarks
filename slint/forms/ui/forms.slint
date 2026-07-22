@@ -1,0 +1,282 @@
+import { Button, CheckBox, ComboBox, GroupBox, LineEdit, ScrollView, Slider, Switch } from "std-widgets.slint";
+
+export component FormsWindow inherits Window {
+    title: "Bench";
+    width: 800px;
+    height: 600px;
+
+    // Driven from Rust during the --interact toggle pass.
+    in-out property <bool> c0; in-out property <bool> c1;
+    in-out property <bool> c2; in-out property <bool> c3;
+    in-out property <bool> c4; in-out property <bool> c5;
+    in-out property <bool> c6; in-out property <bool> c7;
+    in-out property <bool> t0; in-out property <bool> t1;
+    in-out property <bool> t2; in-out property <bool> t3;
+    in-out property <int> ra: 0;
+    in-out property <int> rb: 0;
+    in-out property <float> s0: 50; in-out property <float> s1: 50;
+    in-out property <float> s2: 50; in-out property <float> s3: 50;
+    in-out property <int> d0: 0; in-out property <int> d1: 0;
+    in-out property <int> d2: 0; in-out property <int> d3: 0;
+    in-out property <string> status: "idle";
+
+    property <[string]> ra-names: ["System", "Light", "Dark", "High contrast"];
+    property <[string]> rb-names: ["Off", "Crash reports only", "Basic", "Full"];
+
+    VerticalLayout {
+        HorizontalLayout {
+            height: 48px;
+            padding: 8px;
+            Text {
+                text: "Bench";
+                font-size: 18px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+        ScrollView {
+            VerticalLayout {
+                padding: 8px;
+                spacing: 12px;
+
+                GroupBox {
+                    title: "Account";
+                    VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Username:"; width: 110px; vertical-alignment: center; }
+                            LineEdit { width: 220px; placeholder-text: "Username"; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Email:"; width: 110px; vertical-alignment: center; }
+                            LineEdit { width: 220px; placeholder-text: "Email"; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            CheckBox { text: "Remember me"; checked <=> root.c0; }
+                            CheckBox { text: "Subscribe to newsletter"; checked <=> root.c1; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            Button { text: "Sign out"; }
+                            Rectangle { }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Appearance";
+                    VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Theme:"; width: 110px; }
+                            VerticalLayout {
+                                spacing: 4px;
+                                // No RadioButton in std-widgets: exclusive
+                                // CheckBoxes stand in (see caveats).
+                                CheckBox { text: "System"; checked: root.ra == 0; toggled => { root.ra = 0; } }
+                                CheckBox { text: "Light"; checked: root.ra == 1; toggled => { root.ra = 1; } }
+                                CheckBox { text: "Dark"; checked: root.ra == 2; toggled => { root.ra = 2; } }
+                                CheckBox { text: "High contrast"; checked: root.ra == 3; toggled => { root.ra = 3; } }
+                            }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Font size:"; width: 110px; vertical-alignment: center; }
+                            Slider { width: 200px; minimum: 0; maximum: 100; value <=> root.s0; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Density:"; width: 110px; vertical-alignment: center; }
+                            ComboBox { model: ["Compact", "Cozy", "Normal", "Comfortable", "Spacious"]; current-index <=> root.d0; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Animations:"; width: 110px; vertical-alignment: center; }
+                            Switch { checked <=> root.t0; }
+                            Rectangle { }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Network";
+                    VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Proxy host:"; width: 110px; vertical-alignment: center; }
+                            LineEdit { width: 220px; placeholder-text: "proxy.example.com"; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Proxy port:"; width: 110px; vertical-alignment: center; }
+                            LineEdit { width: 100px; placeholder-text: "8080"; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            CheckBox { text: "Use proxy"; checked <=> root.c2; }
+                            CheckBox { text: "Verify TLS certificates"; checked <=> root.c3; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Timeout:"; width: 110px; vertical-alignment: center; }
+                            Slider { width: 200px; minimum: 0; maximum: 100; value <=> root.s1; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Protocol:"; width: 110px; vertical-alignment: center; }
+                            ComboBox { model: ["Auto", "HTTP/1.1", "HTTP/2", "HTTP/3", "SOCKS5"]; current-index <=> root.d1; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            Button { text: "Test connection"; }
+                            Rectangle { }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Editor";
+                    VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Font family:"; width: 110px; vertical-alignment: center; }
+                            LineEdit { width: 220px; placeholder-text: "monospace"; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Tab width:"; width: 110px; vertical-alignment: center; }
+                            LineEdit { width: 100px; placeholder-text: "4"; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            CheckBox { text: "Word wrap"; checked <=> root.c4; }
+                            CheckBox { text: "Line numbers"; checked <=> root.c5; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Line endings:"; width: 110px; vertical-alignment: center; }
+                            ComboBox { model: ["Auto", "LF", "CRLF", "CR", "Keep mixed"]; current-index <=> root.d2; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Rulers:"; width: 110px; vertical-alignment: center; }
+                            Slider { width: 200px; minimum: 0; maximum: 100; value <=> root.s2; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Autosave:"; width: 110px; vertical-alignment: center; }
+                            Switch { checked <=> root.t1; }
+                            Rectangle { }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Privacy";
+                    VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Telemetry:"; width: 110px; }
+                            VerticalLayout {
+                                spacing: 4px;
+                                CheckBox { text: "Off"; checked: root.rb == 0; toggled => { root.rb = 0; } }
+                                CheckBox { text: "Crash reports only"; checked: root.rb == 1; toggled => { root.rb = 1; } }
+                                CheckBox { text: "Basic"; checked: root.rb == 2; toggled => { root.rb = 2; } }
+                                CheckBox { text: "Full"; checked: root.rb == 3; toggled => { root.rb = 3; } }
+                            }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            CheckBox { text: "Upload crash reports"; checked <=> root.c6; }
+                            CheckBox { text: "Share usage statistics"; checked <=> root.c7; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Do not track:"; width: 110px; vertical-alignment: center; }
+                            Switch { checked <=> root.t2; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            Button { text: "Clear data"; }
+                            Rectangle { }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Advanced";
+                    VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Config path:"; width: 110px; vertical-alignment: center; }
+                            LineEdit { width: 220px; placeholder-text: "~/.config/bench"; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Log filter:"; width: 110px; vertical-alignment: center; }
+                            LineEdit { width: 220px; placeholder-text: "info"; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Log level:"; width: 110px; vertical-alignment: center; }
+                            ComboBox { model: ["Error", "Warn", "Info", "Debug", "Trace"]; current-index <=> root.d3; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Cache size:"; width: 110px; vertical-alignment: center; }
+                            Slider { width: 200px; minimum: 0; maximum: 100; value <=> root.s3; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Experimental:"; width: 110px; vertical-alignment: center; }
+                            Switch { checked <=> root.t3; }
+                            Rectangle { }
+                        }
+                        HorizontalLayout {
+                            Button { text: "Reset all"; }
+                            Rectangle { }
+                        }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 32px;
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 8px;
+            Text { text: root.status; color: #777777; vertical-alignment: center; }
+            Text { text: "theme: " + root.ra-names[root.ra]; color: #777777; vertical-alignment: center; }
+            Text { text: "telemetry: " + root.rb-names[root.rb]; color: #777777; vertical-alignment: center; }
+            Rectangle { }
+        }
+    }
+}

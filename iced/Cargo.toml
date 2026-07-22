@@ -4,7 +4,28 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-iced = "0.13"
+# "tokio" is needed only for the forms app's step timer
+# (iced::time::every); LTO strips it from the other bins.
+iced = { version = "0.13", features = ["tokio"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bench-iced-hello"
+path = "src/bin/hello.rs"
+
+[[bin]]
+name = "bench-iced-list"
+path = "src/bin/list.rs"
+
+[[bin]]
+name = "bench-iced-forms"
+path = "src/bin/forms.rs"
+
+[[bin]]
+name = "bench-iced-textview"
+path = "src/bin/textview.rs"
 
 [profile.release]
 opt-level = 3

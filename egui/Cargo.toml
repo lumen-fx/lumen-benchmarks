@@ -6,6 +6,25 @@ edition = "2021"
 [dependencies]
 eframe = "0.35"
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bench-egui-hello"
+path = "src/bin/hello.rs"
+
+[[bin]]
+name = "bench-egui-list"
+path = "src/bin/list.rs"
+
+[[bin]]
+name = "bench-egui-forms"
+path = "src/bin/forms.rs"
+
+[[bin]]
+name = "bench-egui-textview"
+path = "src/bin/textview.rs"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
