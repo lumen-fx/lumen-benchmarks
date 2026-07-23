@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Cross-framework GUI benchmark harness.
 
-Four apps (hello / list / forms / textview), each implemented in six
-frameworks (Lumen, Slint, egui, iced, Qt6 Widgets, GTK4 C), measured the
-same way:
+Four apps (hello / list / forms / textview), each implemented in eight
+frameworks (Lumen, Slint, egui, iced, Qt6 Widgets, GTK4 C, Flutter,
+Tauri), measured the same way:
 
   * startup: process spawn -> first presented frame, n=15 (+1 discarded
     warmup), median + IQR, Tukey-fence outlier count, unstable flag
@@ -17,13 +17,15 @@ same way:
     pass ends; for hello, 5 s after first frame)
   * stripped binary size per app
 
-All six frameworks run windowed under the same nested headless
+All eight frameworks run windowed under the same nested headless
 compositor (weston --backend=headless --renderer=gl, fallback Xvfb);
 nothing appears on the developer's desktop. Lumen runs `lumenc run`
 windowed (real winit window + wgpu AutoVsync present through weston,
-like the other five) and is measured externally over its MCP server
-(persistent connection, `lumen.tick` sampled every 0.5 ms) - see the
-caveats section of results.md. The GL renderer accumulates GPU-side
+like the other five). Startup is measured identically to the native
+apps (spawn->`first_frame` stdout marker + in-app `startup_ms:`, via
+LUMEN_BOOT_TRACE); only the scroll/interact frame cadence is observed
+over its MCP server (persistent connection, `lumen.tick` sampled every
+0.5 ms) - see the caveats section of results.md. The GL renderer accumulates GPU-side
 state across the many short-lived clients a full round spawns, so the
 compositor is restarted at each framework boundary (and on a wedged
 pass) to keep every cell on a fresh compositor - the regime every cell
@@ -65,6 +67,13 @@ RESULTS_MD = ROOT / "results.md"
 CARGO_TARGET = os.environ.get("BENCH_CARGO_TARGET_DIR",
                               "/Storage/cargo-target-benchcomp")
 LUMEN_REPO = Path(os.environ.get("LUMEN_REPO", "/home/artur/Lumen"))
+# Flutter + Tauri build outputs live off the root disk and off the Lumen
+# shared cargo target (see the /Storage rationale above). The flutter
+# bundle dir is a symlink onto /Storage; Tauri gets its own target dir.
+FLUTTER_BUNDLE = (ROOT / "flutter" / "build" / "linux" / "x64" / "release"
+                  / "bundle")
+TAURI_TARGET = Path(os.environ.get("BENCH_TAURI_TARGET_DIR",
+                                   "/Storage/bench-tauri-target"))
 # Must match lumen/*/lumen.toml [mcp].port. Deliberately not 7878 -
 # other lumenc instances (dev tooling) commonly hold the default port.
 LUMEN_MCP_PORT = 7941
@@ -117,11 +126,17 @@ def fw_bin(fw, app):
         "iced": Path(CARGO_TARGET) / "release" / f"bench-iced-{app}",
         "qt-widgets": ROOT / "qt-widgets" / "build" / f"bench_qt_{app}",
         "gtk4": ROOT / "gtk4" / "build" / f"bench_gtk4_{app}",
+        # One built binary per framework; per-app hardlinks let the app
+        # pick its variant from its own basename (mode still comes from the
+        # CLI flag). See flutter/lib/main.dart and tauri/src-tauri/src/main.rs.
+        "flutter": FLUTTER_BUNDLE / f"bench_flutter_{app}",
+        "tauri": TAURI_TARGET / "release" / f"bench-tauri-{app}",
     }
     return rel[fw]
 
 
-FRAMEWORKS = ("lumen", "slint", "egui", "iced", "qt-widgets", "gtk4")
+FRAMEWORKS = ("lumen", "slint", "egui", "iced", "qt-widgets", "gtk4",
+              "flutter", "tauri")
 
 
 def log(msg):
@@ -215,6 +230,9 @@ def capture_env():
         "weston": (_cmd_out(["weston", "--version"]) or "").splitlines()[:1],
         "qt": _cmd_out(["pkg-config", "--modversion", "Qt6Widgets"]),
         "gtk4": _cmd_out(["pkg-config", "--modversion", "gtk4"]),
+        "webkit2gtk": _cmd_out(["pkg-config", "--modversion", "webkit2gtk-4.1"]),
+        "flutter": ((_cmd_out(["flutter", "--version"]) or "").splitlines()
+                    or [None])[0],
         "rustc": _cmd_out(["rustc", "-V"]),
         "python": sys.version.split()[0],
         "lumen_git": {"sha": lumen_sha, "dirty": lumen_dirty},
@@ -223,6 +241,8 @@ def capture_env():
             "iced": _sha256(ROOT / "iced" / "Cargo.lock"),
             "slint": _sha256(ROOT / "slint" / "Cargo.lock"),
             "lumen": _sha256(LUMEN_REPO / "Cargo.lock"),
+            "tauri": _sha256(ROOT / "tauri" / "src-tauri" / "Cargo.lock"),
+            "flutter": _sha256(ROOT / "flutter" / "pubspec.lock"),
         },
         "corpus_sha256_16": _sha256(CORPUS),
     }
@@ -248,6 +268,26 @@ int main(void) {
     return 0;
 }
 """
+
+
+def _hardlink_variants(src, dsts):
+    """Point each dst at src via a hardlink (replacing any stale copy), so
+    the four per-app launcher names share the one built inode."""
+    for dst in dsts:
+        try:
+            dst.unlink()
+        except OSError:
+            pass
+        os.link(src, dst)
+
+
+def _stripped_size(src):
+    """Size of a stripped copy of `src` (never strip build outputs in
+    place). Returns bytes."""
+    dst = BIN_OUT / src.name
+    shutil.copy2(src, dst)
+    subprocess.run(["strip", str(dst)], check=True)
+    return dst.stat().st_size
 
 
 def build_all():
@@ -282,6 +322,23 @@ def build_all():
         run_checked(["cmake", "--build", str(d / "build"), "-j",
                      str(os.cpu_count() or 4)])
 
+    # Flutter: one linux-desktop release build; per-app hardlinks next to
+    # the runner ELF so the app resolves `data/` + `lib/` and its variant.
+    run_checked(["flutter", "build", "linux", "--release"],
+                cwd=ROOT / "flutter")
+    _hardlink_variants(FLUTTER_BUNDLE / "bench_flutter",
+                       [FLUTTER_BUNDLE / f"bench_flutter_{a}" for a in APPS])
+
+    # Tauri: one release binary (--no-bundle: the harness needs only the
+    # executable), into its own /Storage target dir; per-app hardlinks.
+    tauri_env = os.environ.copy()
+    tauri_env["CARGO_TARGET_DIR"] = str(TAURI_TARGET)
+    run_checked(["cargo", "tauri", "build", "--no-bundle"],
+                cwd=ROOT / "tauri" / "src-tauri", env=tauri_env)
+    _hardlink_variants(TAURI_TARGET / "release" / "bench-tauri",
+                       [TAURI_TARGET / "release" / f"bench-tauri-{a}"
+                        for a in APPS])
+
     # Stripped-copy sizes (never strip cargo outputs in place).
     sizes = {}
     for fw in FRAMEWORKS:
@@ -297,12 +354,18 @@ def build_all():
                 sizes[fw][app] = {"app_payload_bytes": sum(
                     f.stat().st_size for f in d.iterdir() if f.is_file())}
             continue
+        if fw == "flutter":
+            # One shared runner ELF + libapp.so (all four apps compile into
+            # the same AOT Dart library). Report runner + libapp, EXCLUDING
+            # libflutter_linux_gtk.so (the engine - the dynamically linked
+            # "toolkit", analogous to Qt/GTK excluding libQt6*/libgtk-4).
+            runner = _stripped_size(FLUTTER_BUNDLE / "bench_flutter")
+            libapp = _stripped_size(FLUTTER_BUNDLE / "lib" / "libapp.so")
+            for app in APPS:
+                sizes[fw][app] = {"stripped_bytes": runner + libapp}
+            continue
         for app in APPS:
-            src = fw_bin(fw, app)
-            dst = BIN_OUT / src.name
-            shutil.copy2(src, dst)
-            subprocess.run(["strip", str(dst)], check=True)
-            sizes[fw][app] = {"stripped_bytes": dst.stat().st_size}
+            sizes[fw][app] = {"stripped_bytes": _stripped_size(fw_bin(fw, app))}
 
     # Toolkit versions for the report.
     versions = {}
@@ -321,6 +384,26 @@ def build_all():
         v = _cmd_out(["pkg-config", "--modversion", pkg])
         if v:
             versions[name] = f"{pkg} {v}"
+    fl = (_cmd_out(["flutter", "--version"]) or "").splitlines()
+    if fl:
+        versions["flutter"] = fl[0].strip()  # e.g. "Flutter 3.44.7 - channel..."
+    # Tauri: crate version from its Cargo.lock + the system webkit2gtk.
+    tlock = ROOT / "tauri" / "src-tauri" / "Cargo.lock"
+    tver = None
+    if tlock.exists():
+        lines = tlock.read_text().splitlines()
+        for i, l in enumerate(lines):
+            if l == 'name = "tauri"' and i + 1 < len(lines):
+                tver = lines[i + 1].split('"')[1]
+                break
+    wk = _cmd_out(["pkg-config", "--modversion", "webkit2gtk-4.1"])
+    parts = []
+    if tver:
+        parts.append(f"tauri {tver}")
+    if wk:
+        parts.append(f"webkit2gtk {wk}")
+    if parts:
+        versions["tauri"] = " · ".join(parts)
     return sizes, versions
 
 
@@ -498,7 +581,7 @@ def app_popen(cmd, env):
                             start_new_session=True)
 
 
-def spawn(fw_name, app, mode_args, display):
+def spawn(fw_name, app, mode_args, display, extra_env=None):
     if fw_name == "lumen":
         # Windowed: real winit window + AutoVsync present through the
         # compositor, same as the other five. Window size comes from the
@@ -507,7 +590,10 @@ def spawn(fw_name, app, mode_args, display):
         cmd = [str(fw_bin("lumen", app)), "run", str(ROOT / "lumen" / app)]
     else:
         cmd = [str(fw_bin(fw_name, app))] + mode_args
-    return app_popen(cmd, display.app_env(fw_name))
+    env = display.app_env(fw_name)
+    if extra_env:
+        env.update(extra_env)
+    return app_popen(cmd, env)
 
 
 def kill(proc):
@@ -936,28 +1022,54 @@ def lumen_spawn_and_wait(app, display):
 
 
 def measure_startup_lumen(app, display, cold=False):
-    external = []
+    """Lumen startup, measured IDENTICALLY to the native frameworks.
+
+    `LUMEN_BOOT_TRACE=1` makes lumenc's windowed backend print, on the
+    first on-screen present, a bare `first_frame` stdout line (the same
+    spawn->marker signal every native bench app prints) followed by
+    `startup_ms:<exec->first-frame ms>` (the in-app clock, parity with the
+    native apps' `startup_ms:` line). No MCP connect/poll is involved, so
+    the old ~108 ms socket-overhead inflation is gone; the scroll/interact
+    passes still drive Lumen over MCP separately."""
+    external, internal = [], []
     spawn_deltas = []
-    for i in range(STARTUP_RUNS + 1):
+    boot_env = {"LUMEN_BOOT_TRACE": "1"}
+    for i in range(STARTUP_RUNS + 1):  # +1 warmup, discarded
         if cold:
             evict_page_cache("lumen", app)
-        proc, client, t_spawn, ts = lumen_spawn_and_wait(app, display)
+        # lumenc still starts its MCP server (unused for startup timing);
+        # make sure the port from the previous run is released first so a
+        # bind race can't abort the process before it paints.
+        wait_port_free(LUMEN_MCP_PORT)
+        t_spawn = time.monotonic()
+        proc = spawn("lumen", app, [], display, extra_env=boot_env)
         kstart = proc_start_monotonic(proc.pid)
-        client.close()
+        reader = LineReader(proc.stdout)
+        ts, _ = reader.wait_for(is_marker, timeout=120)
+        if ts is None:
+            err = proc.stderr.read().decode(errors="replace")[-400:]
+            kill(proc)
+            raise RuntimeError(f"lumen/{app}: no first-frame marker (run {i}): {err}")
+        ts2, line2 = reader.wait_for(lambda l: l.startswith("startup_ms:"),
+                                     timeout=10)
         kill(proc)
         if i == 0:
             time.sleep(0.3)
-            continue
+            continue  # warmup
         external.append((ts - t_spawn) * 1000.0)
+        if line2:
+            internal.append(float(line2.split(":")[1]))
         if kstart is not None:
             spawn_deltas.append((t_spawn - kstart) * 1000.0)
         time.sleep(0.3)
     out = {
         "external_ms": run_stats(external),
-        "self_ms": None,
-        "clock_note": "external: harness CLOCK_MONOTONIC spawn -> MCP frame "
-                      "counter >= 1, sampled every 0.5 ms over a persistent "
-                      "connection; no in-app clock exists (no per-frame hook)",
+        "self_ms": run_stats(internal) if internal else None,
+        "clock_note": "external: harness CLOCK_MONOTONIC spawn->marker "
+                      "(stdout `first_frame` on first on-screen present, "
+                      "same method as the native frameworks); "
+                      "self: app CLOCK_MONOTONIC exec->first-frame "
+                      "(lumenc LUMEN_BOOT_TRACE startup_ms:)",
     }
     if spawn_deltas:
         out["harness_vs_kernel_spawn_ms"] = run_stats(spawn_deltas)
@@ -1255,12 +1367,14 @@ CLOCK_TABLE = """\
 
 | framework | first-frame proxy | frame timestamps | clock |
 |---|---|---|---|
-| lumen | MCP frame counter >= 1, sampled every 0.5 ms | reconstructed from MCP frame counter (0.5 ms sampling) | harness CLOCK_MONOTONIC |
+| lumen | stdout `first_frame` marker on first on-screen present (spawn->marker, same as the native apps) | scroll/interact: reconstructed from MCP frame counter (0.5 ms sampling) | startup external: harness CLOCK_MONOTONIC; startup self: app CLOCK_MONOTONIC exec->first-frame (`startup_ms:`); frame deltas: harness CLOCK_MONOTONIC |
 | slint | rendering notifier `AfterRendering` (frame submitted) | rendering notifier | `std::time::Instant` (CLOCK_MONOTONIC) |
 | egui | end of first `App::update` pass | top of every update pass | `std::time::Instant` (CLOCK_MONOTONIC) |
 | iced | first `window::frames()` delivery | `window::frames()` deliveries | `std::time::Instant` (CLOCK_MONOTONIC) |
 | qt-widgets | first `paintEvent` on the top-level widget | list/textview: viewport Paint events; forms: `UpdateRequest` on the QWindow (one per backing-store sync) | `std::chrono::steady_clock` (CLOCK_MONOTONIC) |
 | gtk4 | GdkFrameClock `after-paint` | GdkFrameClock `after-paint` | `g_get_monotonic_time` (CLOCK_MONOTONIC) |
+| flutter | first `addPostFrameCallback` (engine presented frame 1) | one `SchedulerBinding` persistent frame callback per rendered frame | Dart `Stopwatch` (CLOCK_MONOTONIC) |
+| tauri | first `requestAnimationFrame` after initial DOM paint | `performance.now()` per `requestAnimationFrame` in the webview | startup: Rust `Instant`; frame deltas: JS `performance.now()` (1 ms-clamped) |
 
 The harness itself timestamps with Python `time.monotonic()`
 (CLOCK_MONOTONIC). Every clock in the table is the same kernel clock, so
@@ -1295,8 +1409,15 @@ Known asymmetries - read before quoting numbers:
   all) is gone. Lumen startup includes compiling the `.lmn/.css/.rhai`
   sources (that is how Lumen apps launch today) plus the window
   map/first-present cost the other five also pay. Lumen's size row is the
-  generic `lumenc` runtime plus a few KB of app text. Lumen has no in-app
-  per-frame callback by design, so all Lumen numbers are external: the MCP
+  generic `lumenc` runtime plus a few KB of app text. **Startup is measured
+  identically to the native frameworks:** with `LUMEN_BOOT_TRACE=1`,
+  lumenc's windowed backend prints a bare `first_frame` stdout line on the
+  first on-screen present (the same spawn->marker signal every native bench
+  app prints, read the same way) plus `startup_ms:<exec->first-frame ms>`
+  from an in-app CLOCK_MONOTONIC - so Lumen reports both an external and a
+  self startup number like everyone else, with no MCP connect/poll overhead
+  in the path. Only the **scroll/interact frame cadence** is still observed
+  externally: Lumen has no in-app per-frame callback by design, so the MCP
   frame counter is sampled every 0.5 ms over a persistent connection
   (reading it does not wake the parked loop; only injected events do), and
   frame boundaries are reconstructed from counter advances (quantized at
@@ -1351,10 +1472,50 @@ Known asymmetries - read before quoting numbers:
   the compositor, not presented). Its radio groups are grouped
   GtkCheckButtons (GTK4's radio primitive). textview uses GtkTextView
   (lazy layout around the viewport).
+* **Flutter** renders with its own engine (Impeller/Skia), not the
+  system toolkit - the closest analogue to Lumen's own-renderer model.
+  Startup(external) includes the engine's warm-up the same neutral
+  spawn->`first_frame` way as every native app (no engine pre-warm or
+  daemon). Frame timestamps come from a `SchedulerBinding` persistent
+  frame callback (one per rendered frame). A bare vsync `Ticker` stalls
+  under the headless compositor when a frame carries no damage, so - like
+  the Qt/GTK retained variants - a periodic `Timer` (6 ms) drives the
+  animation/steps and dirties the tree each tick, forcing a full-surface
+  commit every vsync; p50 sits at ~16.7 ms. list is `ListView.builder`
+  (virtualized). textview is the whole corpus in one wrapped `Text`
+  inside a scroll view (full layout, like Slint/iced - no
+  virtualization). Interact: Tab focus-walk advances the real focus
+  chain; toggles are direct state writes (checkbox stands in for the
+  switch-standin toggles, same as Qt/egui/gtk conceptually - Flutter does
+  have a real `Switch`, used here). The four apps share one AOT `libapp.so`
+  + runner ELF selected by executable basename.
+* **Tauri** renders in the **system webkit2gtk** webview (shared library,
+  like Qt/GTK's toolkit) - a browser engine, not a native toolkit. First
+  paint is the webview's first `requestAnimationFrame`; frame deltas are
+  `performance.now()` deltas captured in the rAF loop, **clamped to 1 ms**
+  resolution by WebKit's timer hardening (so Tauri's frame percentiles
+  carry a 1 ms granularity floor the native clocks do not). list is a
+  hand-rolled **windowed/virtualized** DOM list (only visible rows
+  materialized), for a fair 10k comparison; textview is plain DOM (5,000
+  `<p>` in an `overflow:auto` container - the browser paint-culls
+  offscreen content, its idiomatic long-document path, not explicit
+  virtualization). Interact: focus-walk calls `.focus()` down the real
+  focusable chain; toggles are direct DOM state writes (checkbox stands in
+  for the switch). `WEBKIT_DISABLE_DMABUF_RENDERER=1` is set by the app so
+  first paint is reliable under the nested headless compositor. Memory is
+  reported as measured (PSS/RSS of the main process); a webview app also
+  runs shared WebKit network/GPU helper processes and links the large
+  shared `libwebkit2gtk` - its private footprint (PSS) already discounts
+  pages shared with other WebKit users on the box, which no native
+  framework here shares.
 * Binary sizes are not comparable across linkage models: the Rust apps
-  statically link their framework; **Qt** and **GTK4** sizes exclude
-  the dynamically linked toolkit libraries (libQt6*/libgtk-4). Lumen's
-  size is a generic runtime, not an app-specific link.
+  statically link their framework; **Qt**, **GTK4** and **Tauri** sizes
+  exclude the dynamically linked toolkit/engine libraries
+  (libQt6*/libgtk-4/libwebkit2gtk). **Flutter**'s size is runner ELF +
+  the shared AOT `libapp.so`, excluding the ~17 MiB `libflutter` engine
+  (the analogue of those toolkit libs); all four Flutter apps share one
+  `libapp.so`, so their size rows are identical. Lumen's size is a generic
+  runtime, not an app-specific link.
 * Startup runs are warm-cache (one discarded warmup run per cell; no
   page-cache eviction between runs). The optional `--cold` mode evicts
   file-backed pages of the binary + linked libraries + data before each
@@ -1494,7 +1655,7 @@ def write_report(results):
     _disp_note = f"{_disp} --renderer=gl (nested headless)" if _disp == "weston" \
         else f"{_disp} (nested headless)"
     L.append(f"Mesa: {env.get('mesa', '?')} · display: {_disp_note} · "
-             f"all six windowed · "
+             f"all eight windowed · "
              f"Lumen: {env.get('lumen_git', {}).get('sha', '?')[:12]}"
              f"{' (dirty)' if env.get('lumen_git', {}).get('dirty') else ''}")
     L.append("")
@@ -1505,6 +1666,15 @@ def write_report(results):
              f"(IQR/median > {UNSTABLE_IQR_FRACTION:.0%}); (No) = N Tukey "
              "outliers retained. Memory is PSS in MiB with RSS in "
              "parentheses (both from /proc, idle = first frame + 2 s).")
+    L.append("")
+    L.append("**Startup measured identically across all eight frameworks:** "
+             "external = harness CLOCK_MONOTONIC spawn -> first `first_frame` "
+             "stdout marker; self = the app's own CLOCK_MONOTONIC "
+             "exec/main -> first-frame (`startup_ms:`). This includes Lumen, "
+             "whose windowed backend emits both markers under "
+             "`LUMEN_BOOT_TRACE` - there is no MCP connect/poll in the "
+             "startup path (MCP drives only the scroll/interact passes). See "
+             "the clock-sources table and caveats below.")
     L.append("")
 
     def cell(fw, app):
