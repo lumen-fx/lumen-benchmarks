@@ -1,22 +1,26 @@
 # Cross-framework benchmark results
 
-Generated: 2026-07-22 21:09:28 +0000  
+Generated: 2026-07-23 19:11:43 +0000  
 Host: arch · kernel 7.1.3-arch1-2 · 12th Gen Intel(R) Core(TM) i9-12900K (24 cpus)  
-Governors: powersave · governor pin: not permitted (wanted 'performance'; left as-is on cpus [4, 5, 6, 7, 8, 9, 10, 11]) · app cpus [4, 5, 6, 7, 8, 9, 10, 11]  
-Mesa: mesa 1:26.1.4-1 · display: weston --renderer=gl (nested headless) · all six windowed · Lumen: 4ad458af11da (dirty)
+Governors: performance · governor pin: 'performance' on cpus [4, 5, 6, 7, 8, 9, 10, 11] · app cpus [4, 5, 6, 7, 8, 9, 10, 11]  
+Mesa: mesa 1:26.1.4-1 · display: weston --renderer=gl (nested headless) · all eight windowed · Lumen: 7ee3bbe9bdfe (dirty)
 
 Primary numbers below are **round 0**; the run-to-run agreement table compares round 0 vs round 1. Values are medians; ± is half the IQR (startup, n=15) or half the cross-pass spread (frame percentiles, 3 passes). ⚠ = unstable (IQR/median > 5%); (No) = N Tukey outliers retained. Memory is PSS in MiB with RSS in parentheses (both from /proc, idle = first frame + 2 s).
+
+**Startup measured identically across all eight frameworks:** external = harness CLOCK_MONOTONIC spawn -> first `first_frame` stdout marker; self = the app's own CLOCK_MONOTONIC exec/main -> first-frame (`startup_ms:`). This includes Lumen, whose windowed backend emits both markers under `LUMEN_BOOT_TRACE` - there is no MCP connect/poll in the startup path (MCP drives only the scroll/interact passes). See the clock-sources table and caveats below.
 
 ## hello - startup floor, baseline memory, binary size
 
 | framework | version | binary (stripped) | startup ext ms | startup self ms | PSS idle MiB (RSS) | PSS @5 s |
 |---|---|---|---|---|---|---|
-| lumen | git 4ad458a | 20.1 MiB rt +0.7 KiB app | 211.4 ±21.9 ⚠ | - | 66.8 (186.8) | 66.8 (186.8) |
-| slint | slint 1.17.1 | 19.4 MiB | 97.4 ±16.9 ⚠ (2o) | 94.1 ±15.5 ⚠ (2o) | 51.3 (168.4) | 51.3 (168.4) |
-| egui | eframe 0.35.0 | 18.8 MiB | 36.0 ±0.5 (1o) | 34.5 ±0.4 (1o) | 52.9 (165.8) | 52.9 (165.8) |
-| iced | iced 0.13.1 | 14.3 MiB | 56.2 ±1.2 (2o) | 52.6 ±1.1 (2o) | 62.4 (176.4) | 62.4 (176.4) |
-| qt-widgets | Qt6Widgets 6.11.1 | 0.2 MiB | 17.4 ±0.3 (2o) | 12.6 ±0.2 (1o) | 22.2 (39.4) | 22.2 (39.4) |
-| gtk4 | gtk4 4.22.4 | 0.0 MiB | 63.7 ±7.3 ⚠ | 38.3 ±0.3 (3o) | 39.1 (134.5) | 39.1 (134.5) |
+| lumen | git 7ee3bbe | 22.4 MiB rt +0.7 KiB app | 104.1 ±0.5 (1o) | 96.0 ±0.5 (1o) | 62.9 (174.8) | 62.9 (174.8) |
+| slint | slint 1.17.1 | 19.4 MiB | 51.3 ±0.3 | 49.4 ±0.3 | 47.4 (156.4) | 47.4 (156.4) |
+| egui | eframe 0.35.0 | 18.8 MiB | 58.6 ±1.9 ⚠ (1o) | 55.5 ±1.9 ⚠ (1o) | 48.4 (152.9) | 48.4 (152.9) |
+| iced | iced 0.13.1 | 14.3 MiB | 92.1 ±3.7 ⚠ | 86.1 ±3.9 ⚠ | 58.0 (163.0) | 58.0 (163.0) |
+| qt-widgets | Qt6Widgets 6.11.1 | 0.2 MiB | 54.9 ±6.2 ⚠ | 35.1 ±6.0 ⚠ | 23.6 (41.4) | 23.6 (41.4) |
+| gtk4 | gtk4 4.22.4 | 0.0 MiB | 55.1 ±2.0 ⚠ (2o) | 41.2 ±1.6 ⚠ (2o) | 38.2 (135.2) | 38.2 (135.2) |
+| flutter | Flutter 3.44.7 - channel stable - https://github.com/flutter/flutter.git | 5.1 MiB | 126.8 ±3.4 ⚠ (1o) | 30.7 ±0.6 (2o) | 78.2 (206.5) | 83.5 (212.3) |
+| tauri | tauri 2.11.5 · webkit2gtk 2.52.5 | 5.3 MiB | 163.9 ±15.4 ⚠ (1o) | 138.0 ±7.4 ⚠ (2o) | 59.0 (204.3) | 59.0 (204.3) |
 
 ## forms - ~40-widget settings page
 
@@ -24,161 +28,203 @@ Interact pass = 4 cycles x (40-step focus walk + 20-step toggle-all), one step p
 
 | framework | binary | startup ext ms | interact p50 ms | interact p95 ms | interact p99 ms | PSS idle (RSS) | PSS post |
 |---|---|---|---|---|---|---|---|
-| lumen | 20.1 MiB rt +9.3 KiB app | 115.7 ±7.3 ⚠ (2o) | 16.55 ±0.03 | 17.15 ±0.06 | 17.69 ±0.28 | 72.7 (192.8) | 75.5 (196.8) |
-| slint | 23.6 MiB | 65.3 ±0.5 (1o) | 16.67 ±0.01 | 17.00 ±1.05 | 17.89 ±1.57 | 57.0 (174.5) | 59.4 (177.4) |
-| egui | 19.1 MiB | 37.0 ±0.3 | 16.67 ±0.00 | 16.73 ±0.01 | 16.75 ±0.01 | 53.9 (166.8) | 53.9 (166.9) |
-| iced | 14.6 MiB | 56.5 ±0.4 (1o) | 16.67 ±0.00 | 16.89 ±0.10 | 33.35 ±0.02 | 62.6 (176.4) | 63.3 (177.2) |
-| qt-widgets | 0.3 MiB | 38.4 ±6.9 ⚠ | 15.87 ±0.06 | 19.57 ±1.46 | 19.96 ±1.49 | 24.7 (42.1) | 26.5 (44.0) |
-| gtk4 | 0.0 MiB | 69.4 ±5.6 ⚠ | 16.66 ±0.02 | 17.33 ±0.02 | 17.84 ±0.26 | 41.8 (137.3) | 42.0 (137.4) |
+| lumen | 22.4 MiB rt +9.3 KiB app | 123.9 ±0.5 (1o) | 16.51 ±0.00 | 17.00 ±0.00 | 17.02 ±0.01 | 68.9 (180.9) | 71.6 (184.8) |
+| slint | 23.6 MiB | 80.2 ±6.3 ⚠ | 16.66 ±0.02 | 17.08 ±0.12 | 17.65 ±0.49 | 53.7 (162.8) | 56.0 (165.6) |
+| egui | 19.1 MiB | 61.2 ±1.2 (1o) | 16.67 ±0.00 | 16.72 ±0.00 | 16.84 ±0.01 | 49.3 (153.8) | 49.6 (154.1) |
+| iced | 14.6 MiB | 180.9 ±26.0 ⚠ (1o) | 16.73 ±0.02 | 30.52 ±4.03 | 34.31 ±0.53 | 57.6 (163.9) | 58.2 (164.4) |
+| qt-widgets | 0.3 MiB | 49.2 ±6.5 ⚠ | 15.73 ±0.01 | 16.75 ±0.02 | 19.67 ±0.90 | 24.2 (42.0) | 25.9 (44.0) |
+| gtk4 | 0.0 MiB | 66.0 ±4.1 ⚠ (2o) | 16.66 ±0.01 | 16.93 ±0.04 | 17.34 ±0.55 | 40.5 (137.6) | 39.9 (137.0) |
+| flutter | 5.1 MiB | 154.2 ±5.3 ⚠ (2o) | 16.78 ±0.06 | 18.16 ±0.28 | 18.58 ±216.67 | 96.1 (225.6) | 99.3 (228.8) |
+| tauri | 5.3 MiB | 174.8 ±4.7 ⚠ (2o) | 16.00 ±0.00 | 17.00 ±0.00 | 17.00 ±0.00 | 59.1 (204.7) | 59.0 (204.7) |
 
 ## list - 10,000-row list scrolled at 1000 px/s
 
 | framework | binary | startup ext ms | scroll p50 ms | scroll p95 ms | scroll p99 ms | PSS idle (RSS) | PSS post |
 |---|---|---|---|---|---|---|---|
-| lumen | 20.1 MiB rt +2.4 KiB app | 276.1 ±13.1 ⚠ | 16.77 ±0.16 | 18.66 ±0.82 | 19.63 ±1.19 | 86.7 (206.9) | 89.6 (209.8) |
-| slint | 22.3 MiB | 74.5 ±12.7 ⚠ | 16.67 ±0.00 | 17.07 ±0.23 | 17.64 ±0.37 | 54.0 (171.1) | 54.6 (171.8) |
-| egui | 19.0 MiB | 36.8 ±0.3 (3o) | 16.66 ±0.00 | 16.73 ±0.00 | 16.75 ±0.01 | 53.7 (166.5) | 53.7 (166.6) |
-| iced | 14.5 MiB | 150.3 ±1.1 (1o) | 16.63 ±0.02 | 17.55 ±0.04 | 18.21 ±0.33 | 164.1 (278.0) | 164.2 (278.1) |
-| qt-widgets | 0.3 MiB | 17.7 ±0.2 | 15.70 ±0.05 | 16.70 ±0.02 | 16.79 ±0.06 | 23.7 (40.8) | 24.8 (42.8) |
-| gtk4 | 0.0 MiB | 77.3 ±9.6 ⚠ (2o) | 16.67 ±0.00 | 17.25 ±0.32 | 17.85 ±1.57 | 44.7 (140.0) | 44.9 (140.3) |
+| lumen | 22.4 MiB rt +2.4 KiB app | 157.2 ±12.6 ⚠ | 16.50 ±0.00 | 17.01 ±0.00 | 17.01 ±0.00 | 83.9 (196.0) | 84.3 (196.3) |
+| slint | 22.3 MiB | 57.1 ±0.5 | 16.67 ±0.00 | 16.95 ±0.00 | 17.04 ±0.01 | 50.3 (159.2) | 51.3 (160.2) |
+| egui | 19.0 MiB | 60.0 ±1.3 (2o) | 16.67 ±0.00 | 17.21 ±0.18 | 18.38 ±0.39 | 50.0 (154.6) | 49.7 (154.2) |
+| iced | 14.5 MiB | 241.7 ±10.7 ⚠ | 21.28 ±0.47 | 28.07 ±2.29 | 37.71 ±2.30 | 160.2 (265.3) | 159.1 (265.3) |
+| qt-widgets | 0.3 MiB | 72.2 ±4.5 ⚠ (2o) | 15.99 ±0.02 | 17.11 ±0.44 | 18.64 ±0.64 | 25.2 (42.9) | 24.3 (42.8) |
+| gtk4 | 0.0 MiB | 76.9 ±6.8 ⚠ | 16.66 ±0.03 | 16.88 ±4594.32 | 17.09 ±4594.28 | 42.6 (139.5) | 42.8 (139.9) |
+| flutter | 5.1 MiB | 147.8 ±3.0 (2o) | 16.74 ±0.15 | 18.05 ±21.93 | 18.40 ±2783.59 | 78.1 (206.8) | 89.4 (218.9) |
+| tauri | 5.3 MiB | 160.6 ±5.8 ⚠ | 16.00 ±0.00 | 17.00 ±1.00 | 17.00 ±2.50 | 59.0 (204.3) | 58.2 (204.6) |
 
 ## textview - 5,000 wrapped paragraphs (~1.1 MiB) scrolled at 1000 px/s
 
 | framework | binary | startup ext ms | scroll p50 ms | scroll p95 ms | scroll p99 ms | PSS idle (RSS) | PSS post |
 |---|---|---|---|---|---|---|---|
-| lumen | 20.1 MiB rt +1367.8 KiB app | 1518.0 ±11.6 | 16.76 ±0.08 | 19.75 ±1.51 | 24.10 ±3.42 | 118.9 (239.2) | 118.7 (238.9) |
-| slint | 19.3 MiB | 1087.6 ±4.3 (3o) | 143.94 ±0.14 | 145.58 ±0.19 | 146.82 ±0.91 | 213.2 (330.5) | 218.3 (335.7) |
-| egui | 18.8 MiB | 233.9 ±2.6 (2o) | 16.66 ±0.00 | 16.72 ±0.01 | 16.77 ±0.01 | 254.7 (367.5) | 255.1 (367.8) |
-| iced | 14.4 MiB | 365.4 ±0.5 (2o) | 44.49 ±0.15 | 44.86 ±0.12 | 45.11 ±0.05 | 387.8 (501.6) | 388.2 (502.0) |
-| qt-widgets | 0.3 MiB | 43.4 ±4.6 ⚠ | 15.85 ±0.02 | 16.77 ±0.05 | 27.18 ±5.19 | 91.3 (109.4) | 91.5 (109.6) |
-| gtk4 | 0.0 MiB | 74.7 ±4.4 ⚠ | 16.66 ±0.03 | 17.89 ±0.05 | 18.31 ±0.07 | 41.8 (137.3) | 43.0 (138.5) |
+| lumen | 22.4 MiB rt +1367.8 KiB app | 208.1 ±1.3 | 16.68 ±0.00 | 17.02 ±0.03 | 17.57 ±0.22 | 113.8 (225.8) | 113.1 (225.2) |
+| slint | 19.3 MiB | 1638.6 ±175.5 ⚠ | 166.95 ±16.63 | 198.69 ±7.27 | 199.60 ±10.11 | 209.5 (318.6) | 214.2 (323.2) |
+| egui | 18.8 MiB | 240.3 ±9.2 ⚠ (3o) | 16.67 ±0.00 | 16.74 ±0.01 | 17.14 ±0.30 | 250.4 (354.9) | 250.6 (354.8) |
+| iced | 14.4 MiB | 649.4 ±36.1 ⚠ (1o) | 48.79 ±5.81 | 65.93 ±9.16 | 72.77 ±15.64 | 382.4 (488.6) | 382.7 (488.9) |
+| qt-widgets | 0.3 MiB | 54.4 ±9.8 ⚠ (1o) | 15.77 ±0.01 | 16.75 ±0.02 | 28.50 ±8.19 | 90.8 (109.4) | 90.9 (109.5) |
+| gtk4 | 0.0 MiB | 68.4 ±0.9 (1o) | 16.66 ±0.01 | 17.24 ±0.04 | 17.58 ±0.09 | 39.8 (136.8) | 41.0 (138.1) |
+| flutter | 5.1 MiB | 542.2 ±12.0 (2o) | 16.73 ±0.04 | 18.38 ±0.19 | 19.34 ±0.17 | 336.0 (464.8) | 344.3 (473.1) |
+| tauri | 5.3 MiB | 246.1 ±3.5 | 16.00 ±0.00 | 17.00 ±0.00 | 17.00 ±0.00 | 60.9 (206.4) | 60.6 (206.0) |
 
 ## Calibration - bounding systematic error
 
-* spawn->marker floor (trivial C binary, n=30): **2.78 ±0.58 ⚠ ms** - harness+fork/exec overhead baked identically into every external startup number.
-* harness-vs-kernel spawn timestamp (independent, /proc starttime): **-1.06 ±0.37 (7o) ms** - bounds the harness's spawn-anchor error.
-* marker pipe latency (app clock vs harness clock): **0.05 ±0.25 ⚠ (3o) ms** - bounds marker-arrival skew.
+* spawn->marker floor (trivial C binary, n=30): **0.81 ±0.03 ⚠ (1o) ms** - harness+fork/exec overhead baked identically into every external startup number.
+* harness-vs-kernel spawn timestamp (independent, /proc starttime): **-0.38 ±0.02 (2o) ms** - bounds the harness's spawn-anchor error.
+* marker pipe latency (app clock vs harness clock): **0.02 ±0.00 ⚠ ms** - bounds marker-arrival skew.
 * Consequence: cross-framework startup deltas below ~1 ms are inside the systematic error band and not meaningful.
 
 ## Run-to-run agreement (round 0 vs round 1)
 
-85/102 headline medians agree within their stated error bars (startup: IQR; frame percentiles: cross-pass spread, floored at 5%; idle PSS: max(3%, 1 MiB)).
+109/136 headline medians agree within their stated error bars (startup: IQR; frame percentiles: cross-pass spread, floored at 5%; idle PSS: max(3%, 1 MiB)).
 
 | framework | app | metric | round 0 | round 1 | |Δ| | error bar | agree |
 |---|---|---|---|---|---|---|---|
-| lumen | hello | startup ext ms | 211.429 | 112.534 | 98.895 | 43.79 | ✗ MISMATCH |
-| lumen | hello | idle PSS kB | 68360 | 67813 | 547 | 2050.8 | ✓ |
-| lumen | list | startup ext ms | 276.148 | 152.648 | 123.5 | 26.142 | ✗ MISMATCH |
-| lumen | list | scroll p50_ms | 16.768 | 16.937 | 0.169 | 0.838 | ✓ |
-| lumen | list | scroll p95_ms | 18.659 | 17.523 | 1.136 | 1.635 | ✓ |
-| lumen | list | scroll p99_ms | 19.633 | 17.569 | 2.064 | 2.388 | ✓ |
-| lumen | list | idle PSS kB | 88778 | 89668 | 890 | 2663.34 | ✓ |
-| lumen | forms | startup ext ms | 115.683 | 130.127 | 14.444 | 14.614 | ✓ |
-| lumen | forms | interact p50_ms | 16.546 | 16.586 | 0.04 | 0.827 | ✓ |
-| lumen | forms | interact p95_ms | 17.153 | 17.181 | 0.028 | 0.858 | ✓ |
-| lumen | forms | interact p99_ms | 17.687 | 18.099 | 0.412 | 0.884 | ✓ |
-| lumen | forms | idle PSS kB | 74401 | 73845 | 556 | 2232.03 | ✓ |
-| lumen | textview | startup ext ms | 1517.972 | 1499.685 | 18.287 | 30.359 | ✓ |
-| lumen | textview | scroll p50_ms | 16.763 | 16.725 | 0.038 | 0.838 | ✓ |
-| lumen | textview | scroll p95_ms | 19.752 | 18.324 | 1.428 | 3.014 | ✓ |
-| lumen | textview | scroll p99_ms | 24.098 | 18.925 | 5.173 | 6.831 | ✓ |
-| lumen | textview | idle PSS kB | 121788 | 121294 | 494 | 3653.64 | ✓ |
-| slint | hello | startup ext ms | 97.422 | 73.352 | 24.07 | 33.72 | ✓ |
-| slint | hello | idle PSS kB | 52488 | 52454 | 34 | 1574.64 | ✓ |
-| slint | list | startup ext ms | 74.505 | 68.975 | 5.53 | 25.446 | ✓ |
-| slint | list | scroll p50_ms | 16.667 | 16.665 | 0.002 | 0.833 | ✓ |
-| slint | list | scroll p95_ms | 17.068 | 18.112 | 1.044 | 0.853 | ✗ MISMATCH |
-| slint | list | scroll p99_ms | 17.645 | 18.659 | 1.014 | 0.882 | ✗ MISMATCH |
-| slint | list | idle PSS kB | 55248 | 55119 | 129 | 1657.44 | ✓ |
-| slint | forms | startup ext ms | 65.275 | 84.625 | 19.35 | 13.577 | ✗ MISMATCH |
-| slint | forms | interact p50_ms | 16.666 | 16.683 | 0.017 | 0.833 | ✓ |
-| slint | forms | interact p95_ms | 16.999 | 18.862 | 1.863 | 2.091 | ✓ |
-| slint | forms | interact p99_ms | 17.893 | 20.433 | 2.54 | 3.143 | ✓ |
-| slint | forms | idle PSS kB | 58391 | 58701 | 310 | 1751.73 | ✓ |
-| slint | textview | startup ext ms | 1087.647 | 1095.009 | 7.362 | 21.753 | ✓ |
-| slint | textview | scroll p50_ms | 143.943 | 143.375 | 0.568 | 7.197 | ✓ |
-| slint | textview | scroll p95_ms | 145.583 | 145.89 | 0.307 | 7.279 | ✓ |
-| slint | textview | scroll p99_ms | 146.824 | 146.565 | 0.259 | 7.341 | ✓ |
-| slint | textview | idle PSS kB | 218367 | 218458 | 91 | 6551.01 | ✓ |
-| egui | hello | startup ext ms | 36.025 | 69.277 | 33.252 | 20.362 | ✗ MISMATCH |
-| egui | hello | idle PSS kB | 54125 | 54068 | 57 | 1623.75 | ✓ |
-| egui | list | startup ext ms | 36.806 | 71.822 | 35.016 | 7.712 | ✗ MISMATCH |
-| egui | list | scroll p50_ms | 16.664 | 16.665 | 0.001 | 0.833 | ✓ |
-| egui | list | scroll p95_ms | 16.725 | 16.717 | 0.008 | 0.836 | ✓ |
-| egui | list | scroll p99_ms | 16.75 | 16.752 | 0.002 | 0.838 | ✓ |
-| egui | list | idle PSS kB | 54970 | 54826 | 144 | 1649.1 | ✓ |
-| egui | forms | startup ext ms | 37.015 | 72.569 | 35.554 | 7.704 | ✗ MISMATCH |
-| egui | forms | interact p50_ms | 16.669 | 16.667 | 0.002 | 0.833 | ✓ |
-| egui | forms | interact p95_ms | 16.727 | 16.713 | 0.014 | 0.836 | ✓ |
-| egui | forms | interact p99_ms | 16.752 | 16.753 | 0.001 | 0.838 | ✓ |
-| egui | forms | idle PSS kB | 55186 | 55278 | 92 | 1655.58 | ✓ |
-| egui | textview | startup ext ms | 233.854 | 268.963 | 35.109 | 11.262 | ✗ MISMATCH |
-| egui | textview | scroll p50_ms | 16.665 | 16.664 | 0.001 | 0.833 | ✓ |
-| egui | textview | scroll p95_ms | 16.72 | 16.723 | 0.003 | 0.836 | ✓ |
-| egui | textview | scroll p99_ms | 16.766 | 16.757 | 0.009 | 0.838 | ✓ |
-| egui | textview | idle PSS kB | 260831 | 260634 | 197 | 7824.93 | ✓ |
-| iced | hello | startup ext ms | 56.19 | 67.85 | 11.66 | 14.082 | ✓ |
-| iced | hello | idle PSS kB | 63880 | 63581 | 299 | 1916.4 | ✓ |
-| iced | list | startup ext ms | 150.336 | 184.097 | 33.761 | 15.605 | ✗ MISMATCH |
-| iced | list | scroll p50_ms | 16.632 | 16.704 | 0.072 | 0.832 | ✓ |
-| iced | list | scroll p95_ms | 17.555 | 17.818 | 0.263 | 0.878 | ✓ |
-| iced | list | scroll p99_ms | 18.208 | 19.33 | 1.122 | 2.068 | ✓ |
-| iced | list | idle PSS kB | 167995 | 167990 | 5 | 5039.85 | ✓ |
-| iced | forms | startup ext ms | 56.472 | 96.349 | 39.877 | 12.176 | ✗ MISMATCH |
-| iced | forms | interact p50_ms | 16.673 | 16.671 | 0.002 | 0.834 | ✓ |
-| iced | forms | interact p95_ms | 16.886 | 17.551 | 0.665 | 0.844 | ✓ |
-| iced | forms | interact p99_ms | 33.352 | 33.351 | 0.001 | 1.668 | ✓ |
-| iced | forms | idle PSS kB | 64066 | 64129 | 63 | 1921.98 | ✓ |
-| iced | textview | startup ext ms | 365.395 | 407.547 | 42.152 | 9.337 | ✗ MISMATCH |
-| iced | textview | scroll p50_ms | 44.487 | 44.874 | 0.387 | 2.583 | ✓ |
-| iced | textview | scroll p95_ms | 44.859 | 45.319 | 0.46 | 2.698 | ✓ |
-| iced | textview | scroll p99_ms | 45.113 | 45.988 | 0.875 | 2.577 | ✓ |
-| iced | textview | idle PSS kB | 397087 | 396980 | 107 | 11912.61 | ✓ |
-| qt-widgets | hello | startup ext ms | 17.364 | 28.301 | 10.937 | 10.946 | ✓ |
-| qt-widgets | hello | idle PSS kB | 22762 | 22759 | 3 | 1024 | ✓ |
-| qt-widgets | list | startup ext ms | 17.72 | 32.619 | 14.899 | 8.303 | ✗ MISMATCH |
-| qt-widgets | list | scroll p50_ms | 15.699 | 15.809 | 0.11 | 0.785 | ✓ |
-| qt-widgets | list | scroll p95_ms | 16.703 | 16.734 | 0.031 | 0.835 | ✓ |
-| qt-widgets | list | scroll p99_ms | 16.785 | 16.887 | 0.102 | 0.839 | ✓ |
-| qt-widgets | list | idle PSS kB | 24256 | 24259 | 3 | 1024 | ✓ |
-| qt-widgets | forms | startup ext ms | 38.393 | 30.754 | 7.639 | 13.817 | ✓ |
-| qt-widgets | forms | interact p50_ms | 15.868 | 15.871 | 0.003 | 0.793 | ✓ |
-| qt-widgets | forms | interact p95_ms | 19.567 | 16.908 | 2.659 | 2.914 | ✓ |
-| qt-widgets | forms | interact p99_ms | 19.964 | 19.843 | 0.121 | 2.971 | ✓ |
-| qt-widgets | forms | idle PSS kB | 25331 | 25217 | 114 | 1024 | ✓ |
-| qt-widgets | textview | startup ext ms | 43.391 | 47.541 | 4.15 | 15.276 | ✓ |
-| qt-widgets | textview | scroll p50_ms | 15.85 | 15.844 | 0.006 | 0.792 | ✓ |
-| qt-widgets | textview | scroll p95_ms | 16.767 | 16.756 | 0.011 | 0.838 | ✓ |
-| qt-widgets | textview | scroll p99_ms | 27.182 | 26.949 | 0.233 | 10.383 | ✓ |
-| qt-widgets | textview | idle PSS kB | 93499 | 93532 | 33 | 2804.97 | ✓ |
-| gtk4 | hello | startup ext ms | 63.703 | 63.547 | 0.156 | 14.516 | ✓ |
-| gtk4 | hello | idle PSS kB | 40029 | 38450 | 1579 | 1200.87 | ✗ MISMATCH |
-| gtk4 | list | startup ext ms | 77.264 | 80.958 | 3.694 | 19.196 | ✓ |
-| gtk4 | list | scroll p50_ms | 16.667 | 16.65 | 0.017 | 0.833 | ✓ |
-| gtk4 | list | scroll p95_ms | 17.249 | 17.425 | 0.176 | 0.862 | ✓ |
-| gtk4 | list | scroll p99_ms | 17.849 | 17.867 | 0.018 | 3.135 | ✓ |
-| gtk4 | list | idle PSS kB | 45726 | 44030 | 1696 | 1371.78 | ✗ MISMATCH |
-| gtk4 | forms | startup ext ms | 69.355 | 70.951 | 1.596 | 11.217 | ✓ |
-| gtk4 | forms | interact p50_ms | 16.663 | 16.67 | 0.007 | 0.833 | ✓ |
-| gtk4 | forms | interact p95_ms | 17.328 | 17.306 | 0.022 | 0.866 | ✓ |
-| gtk4 | forms | interact p99_ms | 17.839 | 18.074 | 0.235 | 0.892 | ✓ |
-| gtk4 | forms | idle PSS kB | 42775 | 40978 | 1797 | 1283.25 | ✗ MISMATCH |
-| gtk4 | textview | startup ext ms | 74.69 | 72.795 | 1.895 | 8.828 | ✓ |
-| gtk4 | textview | scroll p50_ms | 16.664 | 16.604 | 0.06 | 0.833 | ✓ |
-| gtk4 | textview | scroll p95_ms | 17.894 | 17.881 | 0.013 | 0.895 | ✓ |
-| gtk4 | textview | scroll p99_ms | 18.308 | 18.476 | 0.168 | 0.915 | ✓ |
-| gtk4 | textview | idle PSS kB | 42837 | 41102 | 1735 | 1285.11 | ✗ MISMATCH |
+| lumen | hello | startup ext ms | 104.108 | 109.639 | 5.531 | 6.492 | ✓ |
+| lumen | hello | idle PSS kB | 64394 | 63647 | 747 | 1931.82 | ✓ |
+| lumen | list | startup ext ms | 157.181 | 145.566 | 11.615 | 25.129 | ✓ |
+| lumen | list | scroll p50_ms | 16.504 | 16.507 | 0.003 | 0.825 | ✓ |
+| lumen | list | scroll p95_ms | 17.006 | 17.015 | 0.009 | 0.85 | ✓ |
+| lumen | list | scroll p99_ms | 17.013 | 17.04 | 0.027 | 16.374 | ✓ |
+| lumen | list | idle PSS kB | 85958 | 85491 | 467 | 2578.74 | ✓ |
+| lumen | forms | startup ext ms | 123.915 | 148.803 | 24.888 | 36.273 | ✓ |
+| lumen | forms | interact p50_ms | 16.507 | 16.511 | 0.004 | 0.825 | ✓ |
+| lumen | forms | interact p95_ms | 17.003 | 17.005 | 0.002 | 0.85 | ✓ |
+| lumen | forms | interact p99_ms | 17.018 | 17.028 | 0.01 | 0.851 | ✓ |
+| lumen | forms | idle PSS kB | 70557 | 69929 | 628 | 2116.71 | ✓ |
+| lumen | textview | startup ext ms | 208.129 | 211.215 | 3.086 | 4.929 | ✓ |
+| lumen | textview | scroll p50_ms | 16.679 | 16.679 | 0.0 | 0.834 | ✓ |
+| lumen | textview | scroll p95_ms | 17.017 | 17.192 | 0.175 | 0.851 | ✓ |
+| lumen | textview | scroll p99_ms | 17.574 | 17.652 | 0.078 | 0.879 | ✓ |
+| lumen | textview | idle PSS kB | 116503 | 114883 | 1620 | 3495.09 | ✓ |
+| slint | hello | startup ext ms | 51.277 | 52.214 | 0.937 | 1.313 | ✓ |
+| slint | hello | idle PSS kB | 48585 | 47636 | 949 | 1457.55 | ✓ |
+| slint | list | startup ext ms | 57.117 | 58.916 | 1.799 | 2.58 | ✓ |
+| slint | list | scroll p50_ms | 16.669 | 16.669 | 0.0 | 0.833 | ✓ |
+| slint | list | scroll p95_ms | 16.945 | 17.003 | 0.058 | 0.847 | ✓ |
+| slint | list | scroll p99_ms | 17.044 | 17.121 | 0.077 | 0.852 | ✓ |
+| slint | list | idle PSS kB | 51504 | 50581 | 923 | 1545.12 | ✓ |
+| slint | forms | startup ext ms | 80.226 | 65.881 | 14.345 | 12.512 | ✗ MISMATCH |
+| slint | forms | interact p50_ms | 16.655 | 16.663 | 0.008 | 0.833 | ✓ |
+| slint | forms | interact p95_ms | 17.081 | 17.073 | 0.008 | 0.854 | ✓ |
+| slint | forms | interact p99_ms | 17.65 | 17.464 | 0.186 | 0.987 | ✓ |
+| slint | forms | idle PSS kB | 55018 | 53698 | 1320 | 1650.54 | ✓ |
+| slint | textview | startup ext ms | 1638.615 | 1076.748 | 561.867 | 351.004 | ✗ MISMATCH |
+| slint | textview | scroll p50_ms | 166.951 | 144.512 | 22.439 | 33.251 | ✓ |
+| slint | textview | scroll p95_ms | 198.69 | 147.316 | 51.374 | 14.549 | ✗ MISMATCH |
+| slint | textview | scroll p99_ms | 199.602 | 150.024 | 49.578 | 20.22 | ✗ MISMATCH |
+| slint | textview | idle PSS kB | 214570 | 213631 | 939 | 6437.1 | ✓ |
+| egui | hello | startup ext ms | 58.554 | 36.213 | 22.341 | 3.896 | ✗ MISMATCH |
+| egui | hello | idle PSS kB | 49604 | 48620 | 984 | 1488.12 | ✓ |
+| egui | list | startup ext ms | 59.966 | 38.349 | 21.617 | 2.57 | ✗ MISMATCH |
+| egui | list | scroll p50_ms | 16.666 | 16.659 | 0.007 | 0.833 | ✓ |
+| egui | list | scroll p95_ms | 17.211 | 16.77 | 0.441 | 0.861 | ✓ |
+| egui | list | scroll p99_ms | 18.378 | 16.813 | 1.565 | 0.919 | ✗ MISMATCH |
+| egui | list | idle PSS kB | 51241 | 49335 | 1906 | 1537.23 | ✗ MISMATCH |
+| egui | forms | startup ext ms | 61.236 | 37.68 | 23.556 | 2.453 | ✗ MISMATCH |
+| egui | forms | interact p50_ms | 16.667 | 16.662 | 0.005 | 0.833 | ✓ |
+| egui | forms | interact p95_ms | 16.722 | 16.75 | 0.028 | 0.836 | ✓ |
+| egui | forms | interact p99_ms | 16.836 | 16.814 | 0.022 | 0.842 | ✓ |
+| egui | forms | idle PSS kB | 50492 | 49764 | 728 | 1514.76 | ✓ |
+| egui | textview | startup ext ms | 240.257 | 239.474 | 0.783 | 185.117 | ✓ |
+| egui | textview | scroll p50_ms | 16.666 | 16.663 | 0.003 | 0.833 | ✓ |
+| egui | textview | scroll p95_ms | 16.736 | 16.751 | 0.015 | 0.837 | ✓ |
+| egui | textview | scroll p99_ms | 17.137 | 16.816 | 0.321 | 0.857 | ✓ |
+| egui | textview | idle PSS kB | 256364 | 255833 | 531 | 7690.92 | ✓ |
+| iced | hello | startup ext ms | 92.066 | 57.691 | 34.375 | 743.746 | ✓ |
+| iced | hello | idle PSS kB | 59401 | 58916 | 485 | 1782.03 | ✓ |
+| iced | list | startup ext ms | 241.688 | 157.455 | 84.233 | 21.456 | ✗ MISMATCH |
+| iced | list | scroll p50_ms | 21.278 | 16.606 | 4.672 | 1.064 | ✗ MISMATCH |
+| iced | list | scroll p95_ms | 28.072 | 18.074 | 9.998 | 4.583 | ✗ MISMATCH |
+| iced | list | scroll p99_ms | 37.711 | 19.185 | 18.526 | 4.593 | ✗ MISMATCH |
+| iced | list | idle PSS kB | 164077 | 163627 | 450 | 4922.31 | ✓ |
+| iced | forms | startup ext ms | 180.945 | 62.311 | 118.634 | 52.042 | ✗ MISMATCH |
+| iced | forms | interact p50_ms | 16.735 | 16.67 | 0.065 | 0.837 | ✓ |
+| iced | forms | interact p95_ms | 30.518 | 32.708 | 2.19 | 16.149 | ✓ |
+| iced | forms | interact p99_ms | 34.309 | 454.428 | 420.119 | 763.986 | ✓ |
+| iced | forms | idle PSS kB | 58960 | 59871 | 911 | 1768.8 | ✓ |
+| iced | textview | startup ext ms | 649.397 | 385.064 | 264.333 | 72.119 | ✗ MISMATCH |
+| iced | textview | scroll p50_ms | 48.79 | 44.766 | 4.024 | 11.628 | ✓ |
+| iced | textview | scroll p95_ms | 65.93 | 47.363 | 18.567 | 18.316 | ✗ MISMATCH |
+| iced | textview | scroll p99_ms | 72.768 | 49.764 | 23.004 | 31.284 | ✓ |
+| iced | textview | idle PSS kB | 391600 | 392931 | 1331 | 11748.0 | ✓ |
+| qt-widgets | hello | startup ext ms | 54.917 | 17.926 | 36.991 | 12.396 | ✗ MISMATCH |
+| qt-widgets | hello | idle PSS kB | 24189 | 22236 | 1953 | 1024 | ✗ MISMATCH |
+| qt-widgets | list | startup ext ms | 72.219 | 17.743 | 54.476 | 9.014 | ✗ MISMATCH |
+| qt-widgets | list | scroll p50_ms | 15.99 | 15.71 | 0.28 | 0.8 | ✓ |
+| qt-widgets | list | scroll p95_ms | 17.114 | 16.71 | 0.404 | 0.888 | ✓ |
+| qt-widgets | list | scroll p99_ms | 18.642 | 16.772 | 1.87 | 1.282 | ✗ MISMATCH |
+| qt-widgets | list | idle PSS kB | 25794 | 23847 | 1947 | 1024 | ✗ MISMATCH |
+| qt-widgets | forms | startup ext ms | 49.244 | 18.694 | 30.55 | 12.927 | ✗ MISMATCH |
+| qt-widgets | forms | interact p50_ms | 15.729 | 15.717 | 0.012 | 0.786 | ✓ |
+| qt-widgets | forms | interact p95_ms | 16.75 | 19.515 | 2.765 | 3.044 | ✓ |
+| qt-widgets | forms | interact p99_ms | 19.67 | 19.805 | 0.135 | 3.1 | ✓ |
+| qt-widgets | forms | idle PSS kB | 24819 | 25027 | 208 | 1024 | ✓ |
+| qt-widgets | textview | startup ext ms | 54.43 | 27.938 | 26.492 | 19.55 | ✗ MISMATCH |
+| qt-widgets | textview | scroll p50_ms | 15.769 | 15.724 | 0.045 | 0.788 | ✓ |
+| qt-widgets | textview | scroll p95_ms | 16.755 | 16.726 | 0.029 | 0.838 | ✓ |
+| qt-widgets | textview | scroll p99_ms | 28.505 | 27.419 | 1.086 | 16.388 | ✓ |
+| qt-widgets | textview | idle PSS kB | 93011 | 93357 | 346 | 2790.33 | ✓ |
+| gtk4 | hello | startup ext ms | 55.082 | 51.474 | 3.608 | 4.031 | ✓ |
+| gtk4 | hello | idle PSS kB | 39116 | 38763 | 353 | 1173.48 | ✓ |
+| gtk4 | list | startup ext ms | 76.946 | 68.185 | 8.761 | 13.691 | ✓ |
+| gtk4 | list | scroll p50_ms | 16.663 | 16.665 | 0.002 | 0.833 | ✓ |
+| gtk4 | list | scroll p95_ms | 16.876 | 16.86 | 0.016 | 9188.643 | ✓ |
+| gtk4 | list | scroll p99_ms | 17.092 | 16.946 | 0.146 | 9188.562 | ✓ |
+| gtk4 | list | idle PSS kB | 43585 | 44201 | 616 | 1307.55 | ✓ |
+| gtk4 | forms | startup ext ms | 65.975 | 61.945 | 4.03 | 8.2 | ✓ |
+| gtk4 | forms | interact p50_ms | 16.66 | 16.662 | 0.002 | 0.833 | ✓ |
+| gtk4 | forms | interact p95_ms | 16.929 | 16.872 | 0.057 | 0.846 | ✓ |
+| gtk4 | forms | interact p99_ms | 17.344 | 17.09 | 0.254 | 1.093 | ✓ |
+| gtk4 | forms | idle PSS kB | 41508 | 41308 | 200 | 1245.24 | ✓ |
+| gtk4 | textview | startup ext ms | 68.385 | 67.029 | 1.356 | 3.614 | ✓ |
+| gtk4 | textview | scroll p50_ms | 16.665 | 16.674 | 0.009 | 0.833 | ✓ |
+| gtk4 | textview | scroll p95_ms | 17.236 | 17.174 | 0.062 | 0.862 | ✓ |
+| gtk4 | textview | scroll p99_ms | 17.583 | 17.478 | 0.105 | 0.879 | ✓ |
+| gtk4 | textview | idle PSS kB | 40752 | 41450 | 698 | 1222.56 | ✓ |
+| flutter | hello | startup ext ms | 126.834 | 118.725 | 8.109 | 6.747 | ✗ MISMATCH |
+| flutter | hello | idle PSS kB | 80038 | 84421 | 4383 | 2401.14 | ✗ MISMATCH |
+| flutter | list | startup ext ms | 147.847 | 141.969 | 5.878 | 5.933 | ✓ |
+| flutter | list | scroll p50_ms | 16.738 | 16.795 | 0.057 | 0.837 | ✓ |
+| flutter | list | scroll p95_ms | 18.054 | 18.093 | 0.039 | 4282.664 | ✓ |
+| flutter | list | scroll p99_ms | 18.398 | 18.239 | 0.159 | 5766.517 | ✓ |
+| flutter | list | idle PSS kB | 79944 | 87237 | 7293 | 2398.32 | ✗ MISMATCH |
+| flutter | forms | startup ext ms | 154.245 | 150.427 | 3.818 | 10.565 | ✓ |
+| flutter | forms | interact p50_ms | 16.78 | 16.719 | 0.061 | 0.839 | ✓ |
+| flutter | forms | interact p95_ms | 18.165 | 18.32 | 0.155 | 0.908 | ✓ |
+| flutter | forms | interact p99_ms | 18.576 | 18.615 | 0.039 | 433.338 | ✓ |
+| flutter | forms | idle PSS kB | 98392 | 97450 | 942 | 2951.76 | ✓ |
+| flutter | textview | startup ext ms | 542.244 | 499.062 | 43.182 | 23.984 | ✗ MISMATCH |
+| flutter | textview | scroll p50_ms | 16.725 | 16.791 | 0.066 | 0.836 | ✓ |
+| flutter | textview | scroll p95_ms | 18.38 | 18.255 | 0.125 | 0.919 | ✓ |
+| flutter | textview | scroll p99_ms | 19.345 | 18.878 | 0.467 | 0.967 | ✓ |
+| flutter | textview | idle PSS kB | 344077 | 343655 | 422 | 10322.31 | ✓ |
+| tauri | hello | startup ext ms | 163.928 | 154.928 | 9.0 | 30.739 | ✓ |
+| tauri | hello | idle PSS kB | 60406 | 59833 | 573 | 1812.18 | ✓ |
+| tauri | list | startup ext ms | 160.554 | 158.748 | 1.806 | 11.619 | ✓ |
+| tauri | list | scroll p50_ms | 16.0 | 16.0 | 0.0 | 0.8 | ✓ |
+| tauri | list | scroll p95_ms | 17.0 | 17.0 | 0.0 | 2.0 | ✓ |
+| tauri | list | scroll p99_ms | 17.0 | 17.0 | 0.0 | 5.0 | ✓ |
+| tauri | list | idle PSS kB | 60433 | 60636 | 203 | 1812.99 | ✓ |
+| tauri | forms | startup ext ms | 174.783 | 198.207 | 23.424 | 40.573 | ✓ |
+| tauri | forms | interact p50_ms | 16.0 | 16.0 | 0.0 | 0.8 | ✓ |
+| tauri | forms | interact p95_ms | 17.0 | 17.0 | 0.0 | 0.85 | ✓ |
+| tauri | forms | interact p99_ms | 17.0 | 17.0 | 0.0 | 0.85 | ✓ |
+| tauri | forms | idle PSS kB | 60530 | 60613 | 83 | 1815.9 | ✓ |
+| tauri | textview | startup ext ms | 246.127 | 244.782 | 1.345 | 8.503 | ✓ |
+| tauri | textview | scroll p50_ms | 16.0 | 16.0 | 0.0 | 0.8 | ✓ |
+| tauri | textview | scroll p95_ms | 17.0 | 17.0 | 0.0 | 0.85 | ✓ |
+| tauri | textview | scroll p99_ms | 17.0 | 17.0 | 0.0 | 0.85 | ✓ |
+| tauri | textview | idle PSS kB | 62353 | 62519 | 166 | 1870.59 | ✓ |
 
 ### Clock sources
 
 | framework | first-frame proxy | frame timestamps | clock |
 |---|---|---|---|
-| lumen | MCP frame counter >= 1, sampled every 0.5 ms | reconstructed from MCP frame counter (0.5 ms sampling) | harness CLOCK_MONOTONIC |
+| lumen | stdout `first_frame` marker on first on-screen present (spawn->marker, same as the native apps) | scroll/interact: reconstructed from MCP frame counter (0.5 ms sampling) | startup external: harness CLOCK_MONOTONIC; startup self: app CLOCK_MONOTONIC exec->first-frame (`startup_ms:`); frame deltas: harness CLOCK_MONOTONIC |
 | slint | rendering notifier `AfterRendering` (frame submitted) | rendering notifier | `std::time::Instant` (CLOCK_MONOTONIC) |
 | egui | end of first `App::update` pass | top of every update pass | `std::time::Instant` (CLOCK_MONOTONIC) |
 | iced | first `window::frames()` delivery | `window::frames()` deliveries | `std::time::Instant` (CLOCK_MONOTONIC) |
 | qt-widgets | first `paintEvent` on the top-level widget | list/textview: viewport Paint events; forms: `UpdateRequest` on the QWindow (one per backing-store sync) | `std::chrono::steady_clock` (CLOCK_MONOTONIC) |
 | gtk4 | GdkFrameClock `after-paint` | GdkFrameClock `after-paint` | `g_get_monotonic_time` (CLOCK_MONOTONIC) |
+| flutter | first `addPostFrameCallback` (engine presented frame 1) | one `SchedulerBinding` persistent frame callback per rendered frame | Dart `Stopwatch` (CLOCK_MONOTONIC) |
+| tauri | first `requestAnimationFrame` after initial DOM paint | `performance.now()` per `requestAnimationFrame` in the webview | startup: Rust `Instant`; frame deltas: JS `performance.now()` (1 ms-clamped) |
 
 The harness itself timestamps with Python `time.monotonic()`
 (CLOCK_MONOTONIC). Every clock in the table is the same kernel clock, so
@@ -211,8 +257,15 @@ Known asymmetries - read before quoting numbers:
   all) is gone. Lumen startup includes compiling the `.lmn/.css/.rhai`
   sources (that is how Lumen apps launch today) plus the window
   map/first-present cost the other five also pay. Lumen's size row is the
-  generic `lumenc` runtime plus a few KB of app text. Lumen has no in-app
-  per-frame callback by design, so all Lumen numbers are external: the MCP
+  generic `lumenc` runtime plus a few KB of app text. **Startup is measured
+  identically to the native frameworks:** with `LUMEN_BOOT_TRACE=1`,
+  lumenc's windowed backend prints a bare `first_frame` stdout line on the
+  first on-screen present (the same spawn->marker signal every native bench
+  app prints, read the same way) plus `startup_ms:<exec->first-frame ms>`
+  from an in-app CLOCK_MONOTONIC - so Lumen reports both an external and a
+  self startup number like everyone else, with no MCP connect/poll overhead
+  in the path. Only the **scroll/interact frame cadence** is still observed
+  externally: Lumen has no in-app per-frame callback by design, so the MCP
   frame counter is sampled every 0.5 ms over a persistent connection
   (reading it does not wake the parked loop; only injected events do), and
   frame boundaries are reconstructed from counter advances (quantized at
@@ -267,10 +320,50 @@ Known asymmetries - read before quoting numbers:
   the compositor, not presented). Its radio groups are grouped
   GtkCheckButtons (GTK4's radio primitive). textview uses GtkTextView
   (lazy layout around the viewport).
+* **Flutter** renders with its own engine (Impeller/Skia), not the
+  system toolkit - the closest analogue to Lumen's own-renderer model.
+  Startup(external) includes the engine's warm-up the same neutral
+  spawn->`first_frame` way as every native app (no engine pre-warm or
+  daemon). Frame timestamps come from a `SchedulerBinding` persistent
+  frame callback (one per rendered frame). A bare vsync `Ticker` stalls
+  under the headless compositor when a frame carries no damage, so - like
+  the Qt/GTK retained variants - a periodic `Timer` (6 ms) drives the
+  animation/steps and dirties the tree each tick, forcing a full-surface
+  commit every vsync; p50 sits at ~16.7 ms. list is `ListView.builder`
+  (virtualized). textview is the whole corpus in one wrapped `Text`
+  inside a scroll view (full layout, like Slint/iced - no
+  virtualization). Interact: Tab focus-walk advances the real focus
+  chain; toggles are direct state writes (checkbox stands in for the
+  switch-standin toggles, same as Qt/egui/gtk conceptually - Flutter does
+  have a real `Switch`, used here). The four apps share one AOT `libapp.so`
+  + runner ELF selected by executable basename.
+* **Tauri** renders in the **system webkit2gtk** webview (shared library,
+  like Qt/GTK's toolkit) - a browser engine, not a native toolkit. First
+  paint is the webview's first `requestAnimationFrame`; frame deltas are
+  `performance.now()` deltas captured in the rAF loop, **clamped to 1 ms**
+  resolution by WebKit's timer hardening (so Tauri's frame percentiles
+  carry a 1 ms granularity floor the native clocks do not). list is a
+  hand-rolled **windowed/virtualized** DOM list (only visible rows
+  materialized), for a fair 10k comparison; textview is plain DOM (5,000
+  `<p>` in an `overflow:auto` container - the browser paint-culls
+  offscreen content, its idiomatic long-document path, not explicit
+  virtualization). Interact: focus-walk calls `.focus()` down the real
+  focusable chain; toggles are direct DOM state writes (checkbox stands in
+  for the switch). `WEBKIT_DISABLE_DMABUF_RENDERER=1` is set by the app so
+  first paint is reliable under the nested headless compositor. Memory is
+  reported as measured (PSS/RSS of the main process); a webview app also
+  runs shared WebKit network/GPU helper processes and links the large
+  shared `libwebkit2gtk` - its private footprint (PSS) already discounts
+  pages shared with other WebKit users on the box, which no native
+  framework here shares.
 * Binary sizes are not comparable across linkage models: the Rust apps
-  statically link their framework; **Qt** and **GTK4** sizes exclude
-  the dynamically linked toolkit libraries (libQt6*/libgtk-4). Lumen's
-  size is a generic runtime, not an app-specific link.
+  statically link their framework; **Qt**, **GTK4** and **Tauri** sizes
+  exclude the dynamically linked toolkit/engine libraries
+  (libQt6*/libgtk-4/libwebkit2gtk). **Flutter**'s size is runner ELF +
+  the shared AOT `libapp.so`, excluding the ~17 MiB `libflutter` engine
+  (the analogue of those toolkit libs); all four Flutter apps share one
+  `libapp.so`, so their size rows are identical. Lumen's size is a generic
+  runtime, not an app-specific link.
 * Startup runs are warm-cache (one discarded warmup run per cell; no
   page-cache eviction between runs). The optional `--cold` mode evicts
   file-backed pages of the binary + linked libraries + data before each
