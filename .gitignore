@@ -3,3 +3,13 @@
 /harness/out/
 target/
 __pycache__/
+
+# Flutter: build output is symlinked onto /Storage; tooling caches are local
+/flutter/build
+/flutter/.dart_tool/
+/flutter/.flutter-plugins-dependencies
+/flutter/linux/flutter/ephemeral/
+
+# Tauri: generated schema/build dirs (binary target dir is on /Storage)
+/tauri/src-tauri/gen/
+/tauri/src-tauri/target/

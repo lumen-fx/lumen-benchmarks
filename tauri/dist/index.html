@@ -1,0 +1,417 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bench</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; padding: 0; width: 100vw; height: 100vh;
+        overflow: hidden;
+        font-family: system-ui, "DejaVu Sans", sans-serif;
+        font-size: 14px; color: #111; background: #fff;
+        -webkit-user-select: none; user-select: none;
+      }
+      #root { display: flex; flex-direction: column; height: 100vh; }
+      .header {
+        height: 48px; flex: 0 0 48px; display: flex; align-items: center;
+        padding: 0 8px; gap: 12px; border-bottom: 1px solid #eee;
+      }
+      .title { font-weight: bold; font-size: 18px; }
+      .spacer { flex: 1; }
+      button {
+        font: inherit; padding: 4px 10px; cursor: pointer;
+      }
+      .footer {
+        flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+        padding: 8px; border-top: 1px solid #eee;
+      }
+      input[type="text"] { font: inherit; padding: 4px 6px; width: 240px; }
+      /* list */
+      #viewport { flex: 1; position: relative; overflow: hidden; }
+      #spacer { position: absolute; top: 0; left: 0; width: 100%; }
+      .row {
+        position: absolute; left: 0; width: 100%; height: 36px;
+        display: flex; align-items: center; padding-left: 8px; gap: 12px;
+      }
+      .row .primary { font-weight: bold; }
+      .row .secondary { color: #777; }
+      /* textview */
+      #doc { flex: 1; overflow-y: auto; padding: 8px; }
+      #doc p { margin: 0 0 4px 0; line-height: 1.35; }
+      /* forms */
+      #form { flex: 1; overflow-y: auto; padding: 8px; }
+      .group {
+        border: 1px solid #ddd; border-radius: 6px; padding: 8px;
+        margin-bottom: 10px;
+      }
+      .group h3 { margin: 0 0 6px 0; font-size: 14px; }
+      .frow { display: flex; align-items: center; gap: 12px; margin: 4px 0; }
+      .frow .lbl { width: 110px; }
+      .status { color: #777; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      const invoke = window.__TAURI__.core.invoke;
+
+      const ROWS = 10000, ROWH = 36, SPEED = 1000.0;
+      const STEP_S = 0.016, SETTLE_S = 0.5, STEPS_PER_CYCLE = 60;
+
+      function bounce(dist, max) {
+        if (max <= 0) return 0;
+        const period = 2 * max;
+        const m = dist % period;
+        return m < max ? m : period - m;
+      }
+
+      // ---- generic pass recorder (rAF loop) -----------------------------
+      // driveFn(elapsedSinceStartS) is called every animation frame; it
+      // returns true when the workload is complete. Frame timestamps are
+      // performance.now() at each rAF; deltas are posted back to Rust.
+      function runPass(driveFn, onDone) {
+        const frames = [];
+        let start = null;
+        function loop(now) {
+          if (start === null) start = now;
+          frames.push(now);
+          const done = driveFn((now - start) / 1000.0);
+          if (done) {
+            const deltas = [];
+            for (let i = 1; i < frames.length; i++) {
+              deltas.push(frames[i] - frames[i - 1]);
+            }
+            invoke("report_frames", { deltas });
+            if (onDone) onDone();
+            return;
+          }
+          requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+      }
+
+      // Signal first paint after content is laid out + painted.
+      function signalFirstFrame(then) {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            invoke("first_frame").then(() => { if (then) then(); });
+          })
+        );
+      }
+
+      // ---- hello --------------------------------------------------------
+      function buildHello() {
+        const root = document.getElementById("root");
+        root.innerHTML =
+          '<div style="flex:1;display:flex;flex-direction:column;' +
+          'align-items:center;justify-content:center;gap:12px">' +
+          '<div class="title">Hello</div><button>Press</button></div>';
+        signalFirstFrame();
+      }
+
+      // ---- list (windowed / virtualized) --------------------------------
+      function buildList(cfg) {
+        const root = document.getElementById("root");
+        root.innerHTML =
+          '<div class="header"><span class="title">Bench</span>' +
+          '<span class="spacer"></span>' +
+          '<button id="count">Count: 0</button></div>' +
+          '<div id="viewport"><div id="spacer"></div></div>' +
+          '<div class="footer">' +
+          '<input type="text" placeholder="Type here..." />' +
+          '<input type="range" min="0" max="100" value="50" id="sld" ' +
+          'style="width:200px" /><span id="sldv">50</span></div>';
+
+        let count = 0;
+        document.getElementById("count").onclick = () => {
+          count++;
+          document.getElementById("count").textContent = "Count: " + count;
+        };
+        document.getElementById("sld").oninput = (e) => {
+          document.getElementById("sldv").textContent = e.target.value;
+        };
+
+        const viewport = document.getElementById("viewport");
+        const spacer = document.getElementById("spacer");
+        spacer.style.height = ROWS * ROWH + "px";
+        const pool = [];
+        function ensurePool(n) {
+          while (pool.length < n) {
+            const r = document.createElement("div");
+            r.className = "row";
+            r.innerHTML =
+              '<span class="primary"></span><span class="secondary"></span>';
+            spacer.appendChild(r);
+            pool.push(r);
+          }
+        }
+        let offset = 0;
+        function render() {
+          const vh = viewport.clientHeight;
+          const first = Math.floor(offset / ROWH);
+          const visible = Math.ceil(vh / ROWH) + 2;
+          ensurePool(visible);
+          for (let k = 0; k < pool.length; k++) {
+            const i = first + k;
+            const r = pool[k];
+            if (i < 0 || i >= ROWS || k >= visible) {
+              r.style.display = "none";
+              continue;
+            }
+            r.style.display = "flex";
+            r.style.top = i * ROWH - offset + "px";
+            r.children[0].textContent = "Item " + i;
+            r.children[1].textContent = "subtitle " + i;
+          }
+        }
+        render();
+
+        if (cfg.mode === "scroll") {
+          signalFirstFrame(() => {
+            const max = ROWS * ROWH - viewport.clientHeight;
+            runPass((elapsed) => {
+              if (elapsed >= cfg.scroll_seconds) return true;
+              offset = Math.min(max, Math.max(0, bounce(SPEED * elapsed, max)));
+              render();
+              return false;
+            });
+          });
+        } else {
+          signalFirstFrame();
+        }
+      }
+
+      // ---- textview (plain DOM, browser paint-culls offscreen) ----------
+      function buildTextView(cfg) {
+        const root = document.getElementById("root");
+        root.innerHTML =
+          '<div class="header"><span class="title">Bench</span></div>' +
+          '<div id="doc"></div>';
+        const doc = document.getElementById("doc");
+        const paras = cfg.corpus.split("\n").filter((p) => p.length > 0);
+        const frag = document.createDocumentFragment();
+        for (const p of paras) {
+          const el = document.createElement("p");
+          el.textContent = p;
+          frag.appendChild(el);
+        }
+        doc.appendChild(frag);
+
+        if (cfg.mode === "scroll") {
+          signalFirstFrame(() => {
+            const max = doc.scrollHeight - doc.clientHeight;
+            runPass((elapsed) => {
+              if (elapsed >= cfg.scroll_seconds) return true;
+              doc.scrollTop = Math.min(max, Math.max(0, bounce(SPEED * elapsed, max)));
+              return false;
+            });
+          });
+        } else {
+          signalFirstFrame();
+        }
+      }
+
+      // ---- forms (~40 controls + interact driver) -----------------------
+      const RADIO_A = ["System", "Light", "Dark", "High contrast"];
+      const RADIO_B = ["Off", "Crash reports only", "Basic", "Full"];
+      const DROPS = [
+        ["Compact", "Cozy", "Normal", "Comfortable", "Spacious"],
+        ["Auto", "HTTP/1.1", "HTTP/2", "HTTP/3", "SOCKS5"],
+        ["Auto", "LF", "CRLF", "CR", "Keep mixed"],
+        ["Error", "Warn", "Info", "Debug", "Trace"],
+      ];
+
+      function buildForms(cfg) {
+        const root = document.getElementById("root");
+        const h =
+          '<div class="header"><span class="title">Bench</span></div>' +
+          '<div id="form"></div>' +
+          '<div class="footer">' +
+          '<span class="status" id="status">idle</span>' +
+          '<span class="status" id="theme">theme: System</span>' +
+          '<span class="status" id="tel">telemetry: Off</span></div>';
+        root.innerHTML = h;
+        const form = document.getElementById("form");
+
+        function input(label, ph, w) {
+          return (
+            '<div class="frow"><span class="lbl">' + label + '</span>' +
+            '<input type="text" placeholder="' + ph + '" style="width:' +
+            (w || 220) + 'px" /></div>'
+          );
+        }
+        function check(label) {
+          return (
+            '<label class="cbx"><input type="checkbox" /> ' + label + '</label>'
+          );
+        }
+        function toggle(label) {
+          // No native switch; a checkbox stands in (documented caveat).
+          return (
+            '<div class="frow"><span class="lbl">' + label + '</span>' +
+            '<input type="checkbox" class="switch" /></div>'
+          );
+        }
+        function slider(label) {
+          return (
+            '<div class="frow"><span class="lbl">' + label + '</span>' +
+            '<input type="range" min="0" max="100" value="50" ' +
+            'style="width:200px" /></div>'
+          );
+        }
+        function combo(label, opts) {
+          let o = "";
+          for (const x of opts) o += "<option>" + x + "</option>";
+          return (
+            '<div class="frow"><span class="lbl">' + label + '</span>' +
+            '<select>' + o + '</select></div>'
+          );
+        }
+        function radioCol(label, names, group) {
+          let r = "";
+          for (let i = 0; i < names.length; i++) {
+            r +=
+              '<label><input type="radio" name="' + group + '"' +
+              (i === 0 ? " checked" : "") + " /> " + names[i] + "</label><br/>";
+          }
+          return (
+            '<div class="frow" style="align-items:flex-start">' +
+            '<span class="lbl">' + label + '</span><div>' + r + '</div></div>'
+          );
+        }
+        function button(t) {
+          return '<div class="frow"><button>' + t + "</button></div>";
+        }
+        function group(title, rows) {
+          return (
+            '<div class="group"><h3>' + title + "</h3>" + rows.join("") + "</div>"
+          );
+        }
+
+        form.innerHTML =
+          group("Account", [
+            input("Username:", "Username"),
+            input("Email:", "Email"),
+            '<div class="frow">' + check("Remember me") + "&nbsp;&nbsp;" +
+              check("Subscribe to newsletter") + "</div>",
+            button("Sign out"),
+          ]) +
+          group("Appearance", [
+            radioCol("Theme:", RADIO_A, "theme"),
+            slider("Font size:"),
+            combo("Density:", DROPS[0]),
+            toggle("Animations:"),
+          ]) +
+          group("Network", [
+            input("Proxy host:", "proxy.example.com"),
+            input("Proxy port:", "8080", 100),
+            '<div class="frow">' + check("Use proxy") + "&nbsp;&nbsp;" +
+              check("Verify TLS certificates") + "</div>",
+            slider("Timeout:"),
+            combo("Protocol:", DROPS[1]),
+            button("Test connection"),
+          ]) +
+          group("Editor", [
+            input("Font family:", "monospace"),
+            input("Tab width:", "4", 100),
+            '<div class="frow">' + check("Word wrap") + "&nbsp;&nbsp;" +
+              check("Line numbers") + "</div>",
+            combo("Line endings:", DROPS[2]),
+            slider("Rulers:"),
+            toggle("Autosave:"),
+          ]) +
+          group("Privacy", [
+            radioCol("Telemetry:", RADIO_B, "telemetry"),
+            '<div class="frow">' + check("Upload crash reports") + "&nbsp;&nbsp;" +
+              check("Share usage statistics") + "</div>",
+            toggle("Do not track:"),
+            button("Clear data"),
+          ]) +
+          group("Advanced", [
+            input("Config path:", "~/.config/bench"),
+            input("Log filter:", "info"),
+            combo("Log level:", DROPS[3]),
+            slider("Cache size:"),
+            toggle("Experimental:"),
+            button("Reset all"),
+          ]);
+
+        // Focusable chain, in document order (Tab equivalent).
+        const focusables = Array.from(
+          form.querySelectorAll("input, select, button")
+        );
+        const checks = Array.from(form.querySelectorAll('input[type="checkbox"]'));
+        const radiosA = Array.from(
+          form.querySelectorAll('input[name="theme"]')
+        );
+        const radiosB = Array.from(
+          form.querySelectorAll('input[name="telemetry"]')
+        );
+        const status = document.getElementById("status");
+        const themeEl = document.getElementById("theme");
+        const telEl = document.getElementById("tel");
+        let radioAIdx = 0, radioBIdx = 0;
+
+        function applyStep(step) {
+          const inCycle = step % STEPS_PER_CYCLE;
+          status.textContent = "step " + step;
+          if (inCycle < 40) {
+            const el = focusables[inCycle % focusables.length];
+            if (el) el.focus();
+          } else {
+            const t = inCycle - 40;
+            if (t <= 7) {
+              // 8 labeled checkboxes are the first 8 in `checks`.
+              checks[t].checked = !checks[t].checked;
+            } else if (t <= 11) {
+              // 4 switch-standins are checks[8..11].
+              checks[8 + (t - 8)].checked = !checks[8 + (t - 8)].checked;
+            } else if (t <= 15) {
+              radioAIdx = (radioAIdx + 1) % 4;
+              radiosA[radioAIdx].checked = true;
+              themeEl.textContent = "theme: " + RADIO_A[radioAIdx];
+            } else {
+              radioBIdx = (radioBIdx + 1) % 4;
+              radiosB[radioBIdx].checked = true;
+              telEl.textContent = "telemetry: " + RADIO_B[radioBIdx];
+            }
+          }
+        }
+
+        if (cfg.mode === "interact") {
+          const total = STEPS_PER_CYCLE * cfg.interact_cycles;
+          signalFirstFrame(() => {
+            // settle, then drive one step / 16 ms.
+            setTimeout(() => {
+              focusables[0].focus();
+              let stepDone = 0;
+              runPass((elapsed) => {
+                let due = Math.floor(elapsed / STEP_S);
+                if (due > total) due = total;
+                while (stepDone < due) {
+                  applyStep(stepDone);
+                  stepDone++;
+                }
+                return stepDone >= total;
+              });
+            }, SETTLE_S * 1000);
+          });
+        } else {
+          signalFirstFrame();
+        }
+      }
+
+      // ---- boot ---------------------------------------------------------
+      invoke("bench_config").then((cfg) => {
+        switch (cfg.app) {
+          case "list": buildList(cfg); break;
+          case "forms": buildForms(cfg); break;
+          case "textview": buildTextView(cfg); break;
+          default: buildHello();
+        }
+      });
+    </script>
+  </body>
+</html>
