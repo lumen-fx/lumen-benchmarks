@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic text corpus for the `textview` bench app.
 
-Generates the SAME ~1 MiB / 5,000-paragraph corpus on every invocation
+Generates the same ~1 MiB / 5,000-paragraph corpus on every invocation
 (fixed LCG seed, fixed word list): one paragraph per line, lowercase
 ASCII words only (no markup-significant characters), so the text can be
 embedded verbatim in Lumen markup attributes.

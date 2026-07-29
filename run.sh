@@ -7,15 +7,21 @@
 #   ./run.sh validate               calibrate + two full rounds + agreement table
 #   ./run.sh report                 rewrite results.md from results.json
 #
-# All cargo builds (including the Lumen framework's lumenc) use a private
-# target dir so the Lumen repo's shared target is never touched.
+# All cargo builds (including the Lumen framework's lumenc) use a separate
+# target dir so a shared Lumen target is never touched.
 set -euo pipefail
 
-# Hard-forced: the developer shell exports a global CARGO_TARGET_DIR that
-# points at the Lumen repo's shared target dir; building into it from here
-# would poison its fingerprints. Override BENCH_CARGO_TARGET_DIR to relocate.
-export CARGO_TARGET_DIR="${BENCH_CARGO_TARGET_DIR:-/Storage/cargo-target-benchcomp}"
-export LUMEN_REPO="${LUMEN_REPO:-/home/artur/Lumen}"
-
 cd "$(dirname "$0")"
+
+# A shell may export a global CARGO_TARGET_DIR pointing at a shared Lumen
+# target; building into it from here would poison its fingerprints. Point
+# cargo at the suite's own target dir instead. bench.py owns the default
+# (repo-local, gitignored); override BENCH_CARGO_TARGET_DIR to relocate.
+export BENCH_CARGO_TARGET_DIR="${BENCH_CARGO_TARGET_DIR:-$PWD/harness/out/cargo-target}"
+export CARGO_TARGET_DIR="$BENCH_CARGO_TARGET_DIR"
+
+# Path to the Lumen framework checkout. If it is absent, the lumen rows
+# are skipped with a note. Default: a Lumen dir beside this repo.
+export LUMEN_REPO="${LUMEN_REPO:-$PWD/../Lumen}"
+
 exec python3 harness/bench.py "${@:-all}"

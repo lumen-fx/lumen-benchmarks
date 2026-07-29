@@ -19,17 +19,17 @@ Tauri), measured the same way:
 
 All eight frameworks run windowed under the same nested headless
 compositor (weston --backend=headless --renderer=gl, fallback Xvfb);
-nothing appears on the developer's desktop. Lumen runs `lumenc run`
-windowed (real winit window + wgpu AutoVsync present through weston,
-like the other five). Startup is measured identically to the native
-apps (spawn->`first_frame` stdout marker + in-app `startup_ms:`, via
+nothing appears on the desktop. Lumen runs `lumenc run` windowed (real
+winit window + wgpu AutoVsync present through weston, like the other
+five). Startup is measured identically to the native apps
+(spawn->`first_frame` stdout marker + in-app `startup_ms:`, via
 LUMEN_BOOT_TRACE); only the scroll/interact frame cadence is observed
 over its MCP server (persistent connection, `lumen.tick` sampled every
-0.5 ms) - see the caveats section of results.md. The GL renderer accumulates GPU-side
-state across the many short-lived clients a full round spawns, so the
-compositor is restarted at each framework boundary (and on a wedged
-pass) to keep every cell on a fresh compositor - the regime every cell
-passes in isolation.
+0.5 ms). See the caveats section of results.md. The GL renderer
+accumulates GPU-side state across the many short-lived clients a full
+round spawns, so the compositor is restarted at each framework boundary
+(and on a wedged pass) to keep every cell on a fresh compositor, the
+regime every cell passes in isolation.
 
 Usage:
     harness/bench.py build                    # build + size everything
@@ -61,21 +61,23 @@ CORPUS = OUT / "corpus.txt"
 RESULTS_JSON = ROOT / "results.json"
 RESULTS_MD = ROOT / "results.md"
 
-# Deliberately NOT plain CARGO_TARGET_DIR: the developer shell exports a
-# global CARGO_TARGET_DIR pointing at the Lumen repo's shared target dir,
-# and building into that would poison its fingerprints.
+# Cargo target dir for the Rust builds here. Kept separate from any
+# CARGO_TARGET_DIR the surrounding shell exports: building into a shared
+# Lumen target would poison its fingerprints. Override with
+# BENCH_CARGO_TARGET_DIR; the default is repo-local and gitignored.
 CARGO_TARGET = os.environ.get("BENCH_CARGO_TARGET_DIR",
-                              "/Storage/cargo-target-benchcomp")
-LUMEN_REPO = Path(os.environ.get("LUMEN_REPO", "/home/artur/Lumen"))
-# Flutter + Tauri build outputs live off the root disk and off the Lumen
-# shared cargo target (see the /Storage rationale above). The flutter
-# bundle dir is a symlink onto /Storage; Tauri gets its own target dir.
+                              str(OUT / "cargo-target"))
+# Path to the Lumen framework checkout. If it is absent, the lumen rows
+# are skipped with a note instead of failing the run. Override LUMEN_REPO.
+LUMEN_REPO = Path(os.environ.get("LUMEN_REPO", str(ROOT.parent / "Lumen")))
+# Flutter builds into flutter/build (gitignored); Tauri builds into its
+# own target dir (BENCH_TAURI_TARGET_DIR), off the shared cargo target.
 FLUTTER_BUNDLE = (ROOT / "flutter" / "build" / "linux" / "x64" / "release"
                   / "bundle")
 TAURI_TARGET = Path(os.environ.get("BENCH_TAURI_TARGET_DIR",
-                                   "/Storage/bench-tauri-target"))
-# Must match lumen/*/lumen.toml [mcp].port. Deliberately not 7878 -
-# other lumenc instances (dev tooling) commonly hold the default port.
+                                   str(OUT / "tauri-target")))
+# Must match lumen/*/lumen.toml [mcp].port. Not 7878; other lumenc
+# instances (dev tooling) commonly hold the default port.
 LUMEN_MCP_PORT = 7941
 
 APPS = ("hello", "list", "forms", "textview")
@@ -89,17 +91,55 @@ INTERACT_STEP_S = 0.016
 LUMEN_SCROLL_INTERVAL_S = 1.0 / 60.0
 LUMEN_TICK_SAMPLE_S = 0.0005   # 0.5 ms monotonic lumen.tick sampling
 
-# CPU pinning: measured apps and the compositor get disjoint fixed CPU
-# sets; the harness keeps itself off both. Recorded in env capture.
+# CPU pinning. Measured apps, the compositor, and the harness get
+# disjoint CPU sets when the machine has enough cores; on a small machine
+# pinning is disabled and everything shares all cores. Set BENCH_APP_CPUS
+# to choose the app CPU set explicitly: a single cpu ("4") pins every
+# framework to one core for an efficiency comparison; a list ("4,5,6") or
+# a range ("4-11") pins to that set. The chosen sets go in the env capture.
 N_CPUS = os.cpu_count() or 4
-if N_CPUS >= 16:
+
+
+def _parse_cpu_set(spec):
+    out = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.update(range(int(a), int(b) + 1))
+        else:
+            out.add(int(part))
+    return {c for c in out if 0 <= c < N_CPUS}
+
+
+_app_cpus_env = os.environ.get("BENCH_APP_CPUS")
+if _app_cpus_env:
+    APP_CPUS = _parse_cpu_set(_app_cpus_env) or set(range(N_CPUS))
+    _rest = sorted(set(range(N_CPUS)) - APP_CPUS)
+    if len(_rest) >= 2:
+        _half = max(1, len(_rest) // 2)
+        DISPLAY_CPUS = set(_rest[:_half])
+        HARNESS_CPUS = set(_rest[_half:])
+    elif _rest:
+        DISPLAY_CPUS = HARNESS_CPUS = set(_rest)
+    else:
+        DISPLAY_CPUS = HARNESS_CPUS = set(APP_CPUS)
+    CPU_PIN_NOTE = f"BENCH_APP_CPUS={_app_cpus_env}: app cpus {sorted(APP_CPUS)}"
+elif N_CPUS >= 16:
     APP_CPUS = set(range(4, 12))
     DISPLAY_CPUS = {2, 3}
     HARNESS_CPUS = set(range(12, 16))
+    CPU_PIN_NOTE = f"16+ cores: app cpus {sorted(APP_CPUS)}"
+elif N_CPUS >= 8:
+    DISPLAY_CPUS = {0, 1}
+    HARNESS_CPUS = {N_CPUS - 2, N_CPUS - 1}
+    APP_CPUS = set(range(2, N_CPUS - 2))
+    CPU_PIN_NOTE = f"{N_CPUS} cores: app cpus {sorted(APP_CPUS)}"
 else:
-    APP_CPUS = set(range(N_CPUS))
-    DISPLAY_CPUS = set(range(N_CPUS))
-    HARNESS_CPUS = set(range(N_CPUS))
+    APP_CPUS = DISPLAY_CPUS = HARNESS_CPUS = set(range(N_CPUS))
+    CPU_PIN_NOTE = f"{N_CPUS} cores: pinning disabled, all cpus shared"
 
 WESTON_SOCKET = "wayland-bench"
 XVFB_DISPLAY = ":97"
@@ -137,6 +177,12 @@ def fw_bin(fw, app):
 
 FRAMEWORKS = ("lumen", "slint", "egui", "iced", "qt-widgets", "gtk4",
               "flutter", "tauri")
+
+
+def lumen_available():
+    """True when the Lumen framework checkout is present (its Cargo.toml
+    exists). When absent, the lumen rows are skipped with a note."""
+    return (LUMEN_REPO / "Cargo.toml").is_file()
 
 
 def log(msg):
@@ -223,6 +269,7 @@ def capture_env():
         "app_cpus": sorted(APP_CPUS),
         "display_cpus": sorted(DISPLAY_CPUS),
         "harness_cpus": sorted(HARNESS_CPUS),
+        "cpu_pin_note": CPU_PIN_NOTE,
         "mem": meminfo,
         "loadavg_start": _read("/proc/loadavg"),
         "mesa": _cmd_out(["pacman", "-Q", "mesa"]),
@@ -290,8 +337,52 @@ def _stripped_size(src):
     return dst.stat().st_size
 
 
+def _preflight():
+    """Log which per-framework toolchains are present. A missing toolchain
+    skips that framework during the build; it does not fail the run."""
+    tools = (("rust/cargo", "cargo"), ("cmake", "cmake"), ("flutter", "flutter"),
+             ("tauri cli (cargo-tauri)", "cargo-tauri"), ("c compiler (cc)", "cc"),
+             ("strip", "strip"))
+    for label, exe in tools:
+        state = "found" if shutil.which(exe) else "missing (frameworks needing it are skipped)"
+        log(f"toolchain {label}: {state}")
+    log(f"lumen framework at {LUMEN_REPO}: "
+        f"{'found' if lumen_available() else 'absent (lumen rows skipped)'}")
+
+
+def _sizes_for(fw):
+    """Stripped-copy sizes for one framework (never strip build outputs in
+    place)."""
+    s = {}
+    if fw == "lumen":
+        src = fw_bin("lumen", "x")
+        dst = BIN_OUT / src.name
+        shutil.copy2(src, dst)
+        subprocess.run(["strip", str(dst)], check=True)
+        s["runtime_stripped_bytes"] = dst.stat().st_size
+        for app in APPS:
+            d = ROOT / "lumen" / app
+            s[app] = {"app_payload_bytes": sum(
+                f.stat().st_size for f in d.iterdir() if f.is_file())}
+        return s
+    if fw == "flutter":
+        # One shared runner ELF + libapp.so (all four apps compile into the
+        # same AOT Dart library). Report runner + libapp, without
+        # libflutter_linux_gtk.so (the engine; the dynamically linked
+        # toolkit, analogous to Qt/GTK excluding libQt6*/libgtk-4).
+        runner = _stripped_size(FLUTTER_BUNDLE / "bench_flutter")
+        libapp = _stripped_size(FLUTTER_BUNDLE / "lib" / "libapp.so")
+        for app in APPS:
+            s[app] = {"stripped_bytes": runner + libapp}
+        return s
+    for app in APPS:
+        s[app] = {"stripped_bytes": _stripped_size(fw_bin(fw, app))}
+    return s
+
+
 def build_all():
     BIN_OUT.mkdir(parents=True, exist_ok=True)
+    _preflight()
 
     # Deterministic corpus + generated Lumen textview markup.
     run_checked([sys.executable, str(ROOT / "harness" / "gen_corpus.py")])
@@ -301,71 +392,73 @@ def build_all():
     calib_src.write_text(CALIB_C)
     run_checked(["cc", "-O2", "-o", str(BIN_OUT / "calib"), str(calib_src)])
 
-    # Lumen: build the lumenc runner from the framework repo, validate apps.
-    run_checked(
-        ["cargo", "build", "--release", "-p", "lumenc",
-         "--manifest-path", str(LUMEN_REPO / "Cargo.toml")],
-        env=cargo_env(),
-    )
-    for app in APPS:
-        run_checked([str(fw_bin("lumen", "x")), "check",
-                     str(ROOT / "lumen" / app)])
+    built = set()
+
+    def stage(name, fn):
+        """Run one framework's build; on failure log a skip and continue so
+        a missing toolchain never sinks the whole build."""
+        try:
+            fn()
+            built.add(name)
+        except Exception as e:
+            log(f"skip {name}: build failed or toolchain missing: {e}")
+
+    def _build_lumen():
+        # Build the lumenc runner from the framework repo, validate apps.
+        if not lumen_available():
+            raise RuntimeError(f"Lumen checkout not found at {LUMEN_REPO}")
+        run_checked(
+            ["cargo", "build", "--release", "-p", "lumenc",
+             "--manifest-path", str(LUMEN_REPO / "Cargo.toml")],
+            env=cargo_env())
+        for app in APPS:
+            run_checked([str(fw_bin("lumen", "x")), "check",
+                         str(ROOT / "lumen" / app)])
+    stage("lumen", _build_lumen)
 
     for name in ("slint", "egui", "iced"):
-        run_checked(["cargo", "build", "--release"],
-                    cwd=ROOT / name, env=cargo_env())
+        stage(name, lambda name=name: run_checked(
+            ["cargo", "build", "--release"], cwd=ROOT / name, env=cargo_env()))
 
-    for name in ("qt-widgets", "gtk4"):
+    def _build_cmake(name):
         d = ROOT / name
         run_checked(["cmake", "-S", str(d), "-B", str(d / "build"),
                      "-DCMAKE_BUILD_TYPE=Release"])
         run_checked(["cmake", "--build", str(d / "build"), "-j",
                      str(os.cpu_count() or 4)])
+    for name in ("qt-widgets", "gtk4"):
+        stage(name, lambda name=name: _build_cmake(name))
 
-    # Flutter: one linux-desktop release build; per-app hardlinks next to
-    # the runner ELF so the app resolves `data/` + `lib/` and its variant.
-    run_checked(["flutter", "build", "linux", "--release"],
-                cwd=ROOT / "flutter")
-    _hardlink_variants(FLUTTER_BUNDLE / "bench_flutter",
-                       [FLUTTER_BUNDLE / f"bench_flutter_{a}" for a in APPS])
+    def _build_flutter():
+        # One linux-desktop release build; per-app hardlinks next to the
+        # runner ELF so the app resolves `data/` + `lib/` and its variant.
+        run_checked(["flutter", "build", "linux", "--release"],
+                    cwd=ROOT / "flutter")
+        _hardlink_variants(FLUTTER_BUNDLE / "bench_flutter",
+                           [FLUTTER_BUNDLE / f"bench_flutter_{a}" for a in APPS])
+    stage("flutter", _build_flutter)
 
-    # Tauri: one release binary (--no-bundle: the harness needs only the
-    # executable), into its own /Storage target dir; per-app hardlinks.
-    tauri_env = os.environ.copy()
-    tauri_env["CARGO_TARGET_DIR"] = str(TAURI_TARGET)
-    run_checked(["cargo", "tauri", "build", "--no-bundle"],
-                cwd=ROOT / "tauri" / "src-tauri", env=tauri_env)
-    _hardlink_variants(TAURI_TARGET / "release" / "bench-tauri",
-                       [TAURI_TARGET / "release" / f"bench-tauri-{a}"
-                        for a in APPS])
+    def _build_tauri():
+        # One release binary (--no-bundle: the harness needs only the
+        # executable), into its own target dir; per-app hardlinks.
+        tauri_env = os.environ.copy()
+        tauri_env["CARGO_TARGET_DIR"] = str(TAURI_TARGET)
+        run_checked(["cargo", "tauri", "build", "--no-bundle"],
+                    cwd=ROOT / "tauri" / "src-tauri", env=tauri_env)
+        _hardlink_variants(TAURI_TARGET / "release" / "bench-tauri",
+                           [TAURI_TARGET / "release" / f"bench-tauri-{a}"
+                            for a in APPS])
+    stage("tauri", _build_tauri)
 
-    # Stripped-copy sizes (never strip cargo outputs in place).
+    # Stripped-copy sizes for the frameworks that built.
     sizes = {}
     for fw in FRAMEWORKS:
-        sizes[fw] = {}
-        if fw == "lumen":
-            src = fw_bin("lumen", "x")
-            dst = BIN_OUT / src.name
-            shutil.copy2(src, dst)
-            subprocess.run(["strip", str(dst)], check=True)
-            sizes[fw]["runtime_stripped_bytes"] = dst.stat().st_size
-            for app in APPS:
-                d = ROOT / "lumen" / app
-                sizes[fw][app] = {"app_payload_bytes": sum(
-                    f.stat().st_size for f in d.iterdir() if f.is_file())}
+        if fw not in built:
             continue
-        if fw == "flutter":
-            # One shared runner ELF + libapp.so (all four apps compile into
-            # the same AOT Dart library). Report runner + libapp, EXCLUDING
-            # libflutter_linux_gtk.so (the engine - the dynamically linked
-            # "toolkit", analogous to Qt/GTK excluding libQt6*/libgtk-4).
-            runner = _stripped_size(FLUTTER_BUNDLE / "bench_flutter")
-            libapp = _stripped_size(FLUTTER_BUNDLE / "lib" / "libapp.so")
-            for app in APPS:
-                sizes[fw][app] = {"stripped_bytes": runner + libapp}
-            continue
-        for app in APPS:
-            sizes[fw][app] = {"stripped_bytes": _stripped_size(fw_bin(fw, app))}
+        try:
+            sizes[fw] = _sizes_for(fw)
+        except Exception as e:
+            log(f"skip sizes for {fw}: {e}")
 
     # Toolkit versions for the report.
     versions = {}
@@ -386,7 +479,7 @@ def build_all():
             versions[name] = f"{pkg} {v}"
     fl = (_cmd_out(["flutter", "--version"]) or "").splitlines()
     if fl:
-        versions["flutter"] = fl[0].strip()  # e.g. "Flutter 3.44.7 - channel..."
+        versions["flutter"] = fl[0].strip()  # e.g. "Flutter 3.44.7 - channel ..."
     # Tauri: crate version from its Cargo.lock + the system webkit2gtk.
     tlock = ROOT / "tauri" / "src-tauri" / "Cargo.lock"
     tver = None
@@ -403,7 +496,7 @@ def build_all():
     if wk:
         parts.append(f"webkit2gtk {wk}")
     if parts:
-        versions["tauri"] = " · ".join(parts)
+        versions["tauri"] = " - ".join(parts)
     return sizes, versions
 
 
@@ -440,23 +533,27 @@ class Display:
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
         self._start_xvfb()
         if shutil.which("weston"):
+            if not Path(runtime_dir).is_dir():
+                raise RuntimeError(
+                    f"XDG_RUNTIME_DIR ({runtime_dir}) does not exist; weston "
+                    "cannot create its socket. Log in on a seat that provides "
+                    "it, or export XDG_RUNTIME_DIR to a writable dir.")
             env = os.environ.copy()
             env["XDG_RUNTIME_DIR"] = runtime_dir
             env.pop("WAYLAND_DISPLAY", None)
             # --renderer=gl: weston uses EGL on the real GPU (surfaceless)
             # instead of the noop/pixman software path, so wayland clients
             # get hardware, dmabuf-backed surfaces. Required for Lumen's
-            # wgpu-Vulkan present path - under a software renderer the only
+            # wgpu-Vulkan present path; under a software renderer the only
             # surface-presentable Vulkan adapter is Lavapipe, which is
-            # downlevel and Lumen (rightly) refuses it. The other five
-            # frameworks render fine under GL too (superset of the software
-            # path), so all six share one compositor + present path.
+            # downlevel and Lumen refuses it. The other five frameworks
+            # render fine under GL too (superset of the software path), so
+            # all six share one compositor and present path.
+            cmd = ["weston", "--backend=headless", "--renderer=gl",
+                   f"--socket={WESTON_SOCKET}", "--width=1280", "--height=1024"]
             self.proc = subprocess.Popen(
-                ["weston", "--backend=headless", "--renderer=gl",
-                 f"--socket={WESTON_SOCKET}",
-                 "--width=1280", "--height=1024"],
-                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                preexec_fn=self._preexec)
+                cmd, env=env, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, preexec_fn=self._preexec)
             sock = Path(runtime_dir) / WESTON_SOCKET
             for _ in range(100):
                 if sock.exists():
@@ -466,14 +563,19 @@ class Display:
                 if self.proc.poll() is not None:
                     break
                 time.sleep(0.1)
-            raise RuntimeError("weston failed to create its socket")
+            raise RuntimeError(
+                "weston did not create its socket within 10 s. Command: "
+                + " ".join(cmd) + f" (XDG_RUNTIME_DIR={runtime_dir}). Check "
+                "that a GL-capable GPU/driver is available.")
         if self.xvfb is not None:
             self.backend = "xvfb"
             log(f"Xvfb up on {XVFB_DISPLAY}")
             return
         raise RuntimeError(
-            "neither weston nor Xvfb is installed; cannot run measurements "
-            "headlessly. Install weston (preferred) and re-run.")
+            "no usable headless display: neither weston nor Xvfb is "
+            "installed. Install weston (preferred) and re-run. Manual "
+            "check: weston --backend=headless --renderer=gl "
+            f"--socket={WESTON_SOCKET} --width=1280 --height=1024")
 
     def app_env(self, fw_name):
         env = os.environ.copy()
@@ -524,7 +626,7 @@ class Display:
         hit transient allocation/surface-loss failures that the same
         binaries clear cleanly on a fresh compositor. Restarting on a
         clean boundary (between frameworks) keeps each framework's cells
-        on a compositor that has served only a handful of clients - the
+        on a compositor that has served only a handful of clients; the
         regime every cell passes in isolation."""
         self.stop()
         time.sleep(0.5)
@@ -664,7 +766,7 @@ def proc_start_monotonic(pid):
 def evict_page_cache(fw_name, app):
     """Best-effort partial cold-start: drop file-backed page cache for the
     app binary, its dynamically linked libraries, the corpus, and (Lumen)
-    the app sources. Unprivileged - anonymous pages and already-mapped
+    the app sources. Unprivileged; anonymous pages and already-mapped
     files of other processes stay warm. Labeled 'partial cold'."""
     files = [fw_bin(fw_name, app), CORPUS]
     if fw_name == "lumen":
@@ -965,12 +1067,12 @@ def measure_pass_native(fw, app, mode_arg, display):
 def measure_pass_native_retry(fw, app, mode_arg, display, attempts=3):
     """measure_pass_native with retries. Under full-round load a transient
     compositor surface loss (VK_ERROR_SURFACE_LOST_KHR) or a momentarily
-    stalled frame clock occasionally drops a single pass - the same binary
+    stalled frame clock occasionally drops a single pass; the same binary
     passes cleanly in isolation (verified: egui/forms, egui/textview,
     gtk4/list all pass on a fresh GL compositor). The failure is
     accumulated GPU-side state on the long-lived weston, so a retry on the
-    SAME compositor doesn't clear it; restart the compositor between
-    attempts to recover a genuinely wedged one before surfacing."""
+    same compositor doesn't clear it; restart the compositor between
+    attempts to recover a wedged one before surfacing."""
     last = None
     for i in range(attempts):
         try:
@@ -1022,7 +1124,7 @@ def lumen_spawn_and_wait(app, display):
 
 
 def measure_startup_lumen(app, display, cold=False):
-    """Lumen startup, measured IDENTICALLY to the native frameworks.
+    """Lumen startup, measured identically to the native frameworks.
 
     `LUMEN_BOOT_TRACE=1` makes lumenc's windowed backend print, on the
     first on-screen present, a bare `first_frame` stdout line (the same
@@ -1124,7 +1226,7 @@ def lumen_forms_targets(client):
     """Toggleable controls of the forms app in document order.
 
     Lumen's MCP roles are coarse: checkboxes and switches report role
-    'toggle' (12 of them); radios report 'interactive' (8 - buttons and
+    'toggle' (12 of them); radios report 'interactive' (8; buttons and
     inputs classify as 'text'). Rects are scroll-corrected and queried
     at scroll=0, so sorting by (y, x) is document order; the forms
     markup fixes the mapping below."""
@@ -1153,7 +1255,7 @@ def lumen_click_target(client, eid):
     toggle steps go through the real input pipeline: MCP rects are
     scroll-corrected window coordinates; a wheel event brings offscreen
     controls into the viewport first (extra work the other frameworks'
-    direct state writes don't do - see caveats)."""
+    direct state writes don't do; see caveats)."""
     for _ in range(6):
         resp = client.call("lumen.find", {"by_id": eid})
         rows = resp.get("result", {}).get("results", [])
@@ -1315,7 +1417,7 @@ def calibrate(display):
 
     1. spawn->marker floor: a trivial C binary printing the marker
        immediately. Its external time is pure harness+fork/exec+libc
-       overhead - the floor baked into every external startup number.
+       overhead; the floor baked into every external startup number.
     2. harness-vs-kernel spawn timestamps: the kernel's own record of
        process creation (/proc/pid/stat starttime) versus the harness's
        pre-Popen monotonic stamp. Bounds the external clock anchor error.
@@ -1388,33 +1490,33 @@ CAVEATS = """\
 Same app specs everywhere (800x600 "Bench" window, release builds,
 stripped binaries):
 
-* **hello** - one bold "Hello" label + one "Press" button, centered.
-* **list** - header (bold title + count button), 10,000-row list
+* **hello**: one bold "Hello" label + one "Press" button, centered.
+* **list**: header (bold title + count button), 10,000-row list
   (bold "Item {i}" + grey "subtitle {i}", 36 px rows), footer (text
   input + 0-100 slider + value label).
-* **forms** - header, scrollable settings page: 6 groups, ~40 controls
+* **forms**: header, scrollable settings page: 6 groups, ~40 controls
   (8 text inputs, 8 checkboxes, 4 switches, 2 radio groups x 4, 4
   sliders, 4 dropdowns, 6 buttons), footer status labels that change on
   every interact step.
-* **textview** - header + the shared deterministic corpus (5,000
+* **textview**: header + the shared deterministic corpus (5,000
   paragraphs, ~1.1 MiB) word-wrapped in the framework's idiomatic
   long-document widget, scrolled at 1000 px/s.
 
-Known asymmetries - read before quoting numbers:
+Known asymmetries, read before quoting numbers:
 
 * **Lumen** runs windowed under the same nested compositor as the other
   five: a real winit window presenting through `weston --renderer=gl` via
-  wgpu `AutoVsync`. It shares one present path with the rest - the
+  wgpu `AutoVsync`. It shares one present path with the rest; the
   asymmetry of the earlier offscreen `--headless` runs (no compositor at
   all) is gone. Lumen startup includes compiling the `.lmn/.css/.rhai`
   sources (that is how Lumen apps launch today) plus the window
   map/first-present cost the other five also pay. Lumen's size row is the
-  generic `lumenc` runtime plus a few KB of app text. **Startup is measured
-  identically to the native frameworks:** with `LUMEN_BOOT_TRACE=1`,
+  generic `lumenc` runtime plus a few KB of app text. Startup is measured
+  the same way as the native frameworks: with `LUMEN_BOOT_TRACE=1`,
   lumenc's windowed backend prints a bare `first_frame` stdout line on the
   first on-screen present (the same spawn->marker signal every native bench
   app prints, read the same way) plus `startup_ms:<exec->first-frame ms>`
-  from an in-app CLOCK_MONOTONIC - so Lumen reports both an external and a
+  from an in-app CLOCK_MONOTONIC; so Lumen reports both an external and a
   self startup number like everyone else, with no MCP connect/poll overhead
   in the path. Only the **scroll/interact frame cadence** is still observed
   externally: Lumen has no in-app per-frame callback by design, so the MCP
@@ -1422,7 +1524,7 @@ Known asymmetries - read before quoting numbers:
   (reading it does not wake the parked loop; only injected events do), and
   frame boundaries are reconstructed from counter advances (quantized at
   ~0.5 ms). A headless compositor has no physical display refresh, so
-  wgpu's `AutoVsync` present does not reliably block - Lumen's redraw loop
+  wgpu's `AutoVsync` present does not reliably block; Lumen's redraw loop
   is paced to ~60 Hz by the backend's own animation-frame deadline (a
   no-op on a real vsync display, where the compositor is the clock; it
   only bites when present() returns immediately, capping what would
@@ -1436,20 +1538,20 @@ Known asymmetries - read before quoting numbers:
   0 -> 1 wheel px = 1 scroll px). The interact pass differs structurally:
   Tab focus-walk uses real key events (like Qt/Slint), but Lumen has no
   externally reachable state setter, so toggle steps scroll the control
-  into view and click it - real input-pipeline work (hit-testing,
+  into view and click it; this is real input-pipeline work (hit-testing,
   scrolling) that the other frameworks' direct state writes do not
   perform, so Lumen's interact numbers are an upper bound. A few toggle
   steps near the scroll extremes (rows that cannot be centred in the
   viewport band) do not land; the count is reported as `step_errors` and
   those steps are omitted, not counted as frames.
 * **iced** has no virtualized list widget: the 10k rows are a plain
-  `Column` in a `scrollable`, rebuilt every view pass - idiomatic iced,
-  inherently disadvantaged on the list workload and honestly so. iced
-  renders through wgpu, so under `weston --renderer=gl` its present
-  throttles on the compositor (≈60 Hz, ~17 ms deltas) rather than
-  free-running as it did under the earlier software-renderer compositor
-  (~7 ms) - its scroll cadence now matches the other frameworks. Its
-  textview lays out the full corpus each pass.
+  `Column` in a `scrollable`, rebuilt every view pass; idiomatic iced,
+  inherently disadvantaged on the list workload. iced renders through
+  wgpu, so under `weston --renderer=gl` its present throttles on the
+  compositor (~60 Hz, ~17 ms deltas) rather than free-running as it did
+  under the earlier software-renderer compositor (~7 ms); its scroll
+  cadence now matches the other frameworks. Its textview lays out the
+  full corpus each pass.
 * **egui** is immediate-mode: the whole UI re-lays-out every frame by
   design. Its textview shapes the document into one cached galley
   (cache keyed by text+width), so scrolling costs cache lookup +
@@ -1473,31 +1575,31 @@ Known asymmetries - read before quoting numbers:
   GtkCheckButtons (GTK4's radio primitive). textview uses GtkTextView
   (lazy layout around the viewport).
 * **Flutter** renders with its own engine (Impeller/Skia), not the
-  system toolkit - the closest analogue to Lumen's own-renderer model.
+  system toolkit; the closest analogue to Lumen's own-renderer model.
   Startup(external) includes the engine's warm-up the same neutral
   spawn->`first_frame` way as every native app (no engine pre-warm or
   daemon). Frame timestamps come from a `SchedulerBinding` persistent
   frame callback (one per rendered frame). A bare vsync `Ticker` stalls
-  under the headless compositor when a frame carries no damage, so - like
-  the Qt/GTK retained variants - a periodic `Timer` (6 ms) drives the
+  under the headless compositor when a frame carries no damage, so (like
+  the Qt/GTK retained variants) a periodic `Timer` (6 ms) drives the
   animation/steps and dirties the tree each tick, forcing a full-surface
   commit every vsync; p50 sits at ~16.7 ms. list is `ListView.builder`
   (virtualized). textview is the whole corpus in one wrapped `Text`
-  inside a scroll view (full layout, like Slint/iced - no
+  inside a scroll view (full layout, like Slint/iced, no
   virtualization). Interact: Tab focus-walk advances the real focus
   chain; toggles are direct state writes (checkbox stands in for the
-  switch-standin toggles, same as Qt/egui/gtk conceptually - Flutter does
+  switch-standin toggles, same as Qt/egui/gtk conceptually; Flutter does
   have a real `Switch`, used here). The four apps share one AOT `libapp.so`
   + runner ELF selected by executable basename.
 * **Tauri** renders in the **system webkit2gtk** webview (shared library,
-  like Qt/GTK's toolkit) - a browser engine, not a native toolkit. First
+  like Qt/GTK's toolkit); a browser engine, not a native toolkit. First
   paint is the webview's first `requestAnimationFrame`; frame deltas are
-  `performance.now()` deltas captured in the rAF loop, **clamped to 1 ms**
+  `performance.now()` deltas captured in the rAF loop, clamped to 1 ms
   resolution by WebKit's timer hardening (so Tauri's frame percentiles
   carry a 1 ms granularity floor the native clocks do not). list is a
-  hand-rolled **windowed/virtualized** DOM list (only visible rows
+  hand-rolled windowed/virtualized DOM list (only visible rows
   materialized), for a fair 10k comparison; textview is plain DOM (5,000
-  `<p>` in an `overflow:auto` container - the browser paint-culls
+  `<p>` in an `overflow:auto` container; the browser paint-culls
   offscreen content, its idiomatic long-document path, not explicit
   virtualization). Interact: focus-walk calls `.focus()` down the real
   focusable chain; toggles are direct DOM state writes (checkbox stands in
@@ -1505,7 +1607,7 @@ Known asymmetries - read before quoting numbers:
   first paint is reliable under the nested headless compositor. Memory is
   reported as measured (PSS/RSS of the main process); a webview app also
   runs shared WebKit network/GPU helper processes and links the large
-  shared `libwebkit2gtk` - its private footprint (PSS) already discounts
+  shared `libwebkit2gtk`; its private footprint (PSS) already discounts
   pages shared with other WebKit users on the box, which no native
   framework here shares.
 * Binary sizes are not comparable across linkage models: the Rust apps
@@ -1519,11 +1621,11 @@ Known asymmetries - read before quoting numbers:
 * Startup runs are warm-cache (one discarded warmup run per cell; no
   page-cache eviction between runs). The optional `--cold` mode evicts
   file-backed pages of the binary + linked libraries + data before each
-  run via posix_fadvise - labeled *partial* cold: anonymous pages,
+  run via posix_fadvise; labeled *partial* cold: anonymous pages,
   compositor state, and anything another process keeps mapped stay warm.
   No default results use it.
 * startup(external) includes the harness's spawn overhead identically
-  for every framework - quantified in the calibration section.
+  for every framework, quantified in the calibration section.
   startup(self) starts at the first line of main, so external-self =
   fork/exec + dynamic linking + pre-main init (not available for Lumen).
 """
@@ -1534,12 +1636,12 @@ def fmt_ms(v, spec=".1f"):
 
 
 def fmt_stat(st, spec=".1f"):
-    """median ± IQR/2 rendering with instability flag."""
+    """median +/- IQR/2 rendering with instability flag."""
     if not st or st.get("median") is None:
         return "-"
-    s = f"{format(st['median'], spec)} ±{format(st['iqr'] / 2, spec)}"
+    s = f"{format(st['median'], spec)} +/-{format(st['iqr'] / 2, spec)}"
     if st.get("unstable"):
-        s += " ⚠"
+        s += " (!)"
     if st.get("outliers"):
         s += f" ({len(st['outliers'])}o)"
     return s
@@ -1552,7 +1654,7 @@ def fmt_pct(cell_metric, key):
     spread = cell_metric.get(key + "_spread")
     if med is None:
         return "-"
-    return f"{med:.2f} ±{(spread or 0) / 2:.2f}"
+    return f"{med:.2f} +/-{(spread or 0) / 2:.2f}"
 
 
 def fmt_mem(mem):
@@ -1646,33 +1748,33 @@ def write_report(results):
     L.append("# Cross-framework benchmark results")
     L.append("")
     L.append(f"Generated: {results.get('generated', '?')}  ")
-    L.append(f"Host: {env.get('hostname', '?')} · kernel {env.get('kernel', '?')} · "
+    L.append(f"Host: {env.get('hostname', '?')} | kernel {env.get('kernel', '?')} | "
              f"{env.get('cpu_model', '?')} ({env.get('cpu_count', '?')} cpus)  ")
-    L.append(f"Governors: {'/'.join(env.get('governors', []))} · "
-             f"governor pin: {results.get('governor_note', '?')} · "
+    L.append(f"Governors: {'/'.join(env.get('governors', []))} | "
+             f"governor pin: {results.get('governor_note', '?')} | "
              f"app cpus {env.get('app_cpus')}  ")
     _disp = results.get('display_backend', '?')
     _disp_note = f"{_disp} --renderer=gl (nested headless)" if _disp == "weston" \
         else f"{_disp} (nested headless)"
-    L.append(f"Mesa: {env.get('mesa', '?')} · display: {_disp_note} · "
-             f"all eight windowed · "
+    L.append(f"Mesa: {env.get('mesa', '?')} | display: {_disp_note} | "
+             f"all eight windowed | "
              f"Lumen: {env.get('lumen_git', {}).get('sha', '?')[:12]}"
              f"{' (dirty)' if env.get('lumen_git', {}).get('dirty') else ''}")
     L.append("")
     L.append("Primary numbers below are **round 0**; the run-to-run agreement "
-             "table compares round 0 vs round 1. Values are medians; ± is "
+             "table compares round 0 vs round 1. Values are medians; +/- is "
              "half the IQR (startup, n=15) or half the cross-pass spread "
-             "(frame percentiles, 3 passes). ⚠ = unstable "
+             "(frame percentiles, 3 passes). (!) = unstable "
              f"(IQR/median > {UNSTABLE_IQR_FRACTION:.0%}); (No) = N Tukey "
              "outliers retained. Memory is PSS in MiB with RSS in "
              "parentheses (both from /proc, idle = first frame + 2 s).")
     L.append("")
-    L.append("**Startup measured identically across all eight frameworks:** "
+    L.append("Startup is measured the same way across all eight frameworks: "
              "external = harness CLOCK_MONOTONIC spawn -> first `first_frame` "
              "stdout marker; self = the app's own CLOCK_MONOTONIC "
              "exec/main -> first-frame (`startup_ms:`). This includes Lumen, "
              "whose windowed backend emits both markers under "
-             "`LUMEN_BOOT_TRACE` - there is no MCP connect/poll in the "
+             "`LUMEN_BOOT_TRACE`; there is no MCP connect/poll in the "
              "startup path (MCP drives only the scroll/interact passes). See "
              "the clock-sources table and caveats below.")
     L.append("")
@@ -1750,13 +1852,13 @@ def write_report(results):
         k = cal.get("harness_vs_kernel_spawn_ms", {})
         p = cal.get("marker_pipe_latency_ms", {})
         L.append(f"* spawn->marker floor (trivial C binary, n=30): "
-                 f"**{fmt_stat(f, '.2f')} ms** - harness+fork/exec overhead "
+                 f"**{fmt_stat(f, '.2f')} ms**; harness+fork/exec overhead "
                  "baked identically into every external startup number.")
         L.append(f"* harness-vs-kernel spawn timestamp (independent, "
-                 f"/proc starttime): **{fmt_stat(k, '.2f')} ms** - bounds the "
+                 f"/proc starttime): **{fmt_stat(k, '.2f')} ms**; bounds the "
                  "harness's spawn-anchor error.")
         L.append(f"* marker pipe latency (app clock vs harness clock): "
-                 f"**{fmt_stat(p, '.2f')} ms** - bounds marker-arrival skew.")
+                 f"**{fmt_stat(p, '.2f')} ms**; bounds marker-arrival skew.")
         L.append("* Consequence: cross-framework startup deltas below "
                  "~1 ms are inside the systematic error band and not "
                  "meaningful.")
@@ -1772,13 +1874,13 @@ def write_report(results):
                  "stated error bars (startup: IQR; frame percentiles: "
                  "cross-pass spread, floored at 5%; idle PSS: max(3%, 1 MiB)).")
         L.append("")
-        L.append("| framework | app | metric | round 0 | round 1 | |Δ| | "
+        L.append("| framework | app | metric | round 0 | round 1 | abs delta | "
                  "error bar | agree |")
         L.append("|---|---|---|---|---|---|---|---|")
         for r in rows:
             L.append(f"| {r['fw']} | {r['app']} | {r['metric']} "
                      f"| {r['round0']} | {r['round1']} | {r['delta']} "
-                     f"| {r['error_bar']} | {'✓' if r['agree'] else '✗ MISMATCH'} |")
+                     f"| {r['error_bar']} | {'yes' if r['agree'] else 'no'} |")
         L.append("")
 
     L.append(CLOCK_TABLE)
@@ -1814,10 +1916,13 @@ def measure_round(results, rnd_idx, fws, apps, display, cold=False):
     rnd["loadavg"] = _read("/proc/loadavg")
     t0 = time.monotonic()
     for fw_idx, fw in enumerate(fws):
+        if fw == "lumen" and not lumen_available():
+            log(f"skip lumen: framework checkout not found at {LUMEN_REPO}")
+            continue
         # Refresh the compositor at each framework boundary so GL-renderer
         # GPU state doesn't accumulate across a full round into the
         # transient failures that only appear late (see `Display.restart`).
-        # Skipped before the first framework - `display` is already fresh.
+        # Skipped before the first framework; `display` is already fresh.
         if fw_idx > 0 and display.backend == "weston":
             log(f"--- restarting compositor before {fw} ---")
             display.restart()
@@ -1856,6 +1961,7 @@ def main():
         print(f"unknown framework/app: {unknown}\n{__doc__}")
         return 2
 
+    log(f"cpu pinning: {CPU_PIN_NOTE}")
     try:
         os.sched_setaffinity(0, HARNESS_CPUS)
     except OSError:

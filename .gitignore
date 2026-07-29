@@ -10,6 +10,10 @@ __pycache__/
 /flutter/.flutter-plugins-dependencies
 /flutter/linux/flutter/ephemeral/
 
-# Tauri: generated schema/build dirs (binary target dir is on /Storage)
+# Tauri: generated schema/build dirs (binary target dir is under harness/out)
 /tauri/src-tauri/gen/
 /tauri/src-tauri/target/
+
+# IDE / editor project files
+.idea/
+*.iml
