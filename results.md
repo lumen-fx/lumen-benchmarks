@@ -5,9 +5,9 @@ Host: arch | kernel 7.1.3-arch1-2 | 12th Gen Intel(R) Core(TM) i9-12900K (24 cpu
 Governors: performance | governor pin: 'performance' on cpus [4, 5, 6, 7, 8, 9, 10, 11] | app cpus [4, 5, 6, 7, 8, 9, 10, 11]  
 Mesa: mesa 1:26.1.4-1 | display: weston --renderer=gl (nested headless) | all eight windowed | Lumen: 7ee3bbe9bdfe (dirty)
 
-Primary numbers below are **round 0**; the run-to-run agreement table compares round 0 vs round 1. Values are medians; +/- is half the IQR (startup, n=15) or half the cross-pass spread (frame percentiles, 3 passes). (!) = unstable (IQR/median > 5%); (No) = N Tukey outliers retained. Memory is PSS in MiB with RSS in parentheses (both from /proc, idle = first frame + 2 s).
+The suite runs the whole matrix twice; each full pass is a run. The tables below report run 1. The run-to-run agreement table near the end checks that a second identical run (run 2) lands within the stated error bars. Values are medians; +/- is half the IQR (interquartile range) for startup (n=15) or half the cross-pass spread for frame percentiles (3 passes). (!) marks an unstable cell (IQR/median > 5%). (No) means N Tukey-fence outliers were kept in the sample, e.g. (2o) = 2 outliers. Memory is PSS (proportional set size) in MiB with RSS (resident set size) in parentheses, both from /proc, idle = first frame + 2 s. In the binary column, Lumen is shown as `<n> MiB rt +<n> KiB app`: rt is the shared lumenc runtime, app is the compiled app payload; every other framework shows a single stripped binary size.
 
-Startup is measured the same way across all eight frameworks: external = harness CLOCK_MONOTONIC spawn -> first `first_frame` stdout marker; self = the app's own CLOCK_MONOTONIC exec/main -> first-frame (`startup_ms:`). This includes Lumen, whose windowed backend emits both markers under `LUMEN_BOOT_TRACE`; there is no MCP connect/poll in the startup path (MCP drives only the scroll/interact passes). See the clock-sources table and caveats below.
+Startup is measured the same way across all eight frameworks: external = harness CLOCK_MONOTONIC spawn -> first `first_frame` stdout marker; self = the app's own CLOCK_MONOTONIC exec/main -> first-frame (`startup_ms:`). This includes Lumen, whose windowed backend emits both markers under `LUMEN_BOOT_TRACE`; there is no MCP (the harness control channel to Lumen) connect/poll in the startup path (MCP drives only the scroll/interact passes). See the clock-sources table and caveats below.
 
 ## hello - startup floor, baseline memory, binary size
 
@@ -70,11 +70,11 @@ Interact pass = 4 cycles x (40-step focus walk + 20-step toggle-all), one step p
 * marker pipe latency (app clock vs harness clock): **0.02 +/-0.00 (!) ms**; bounds marker-arrival skew.
 * Consequence: cross-framework startup deltas below ~1 ms are inside the systematic error band and not meaningful.
 
-## Run-to-run agreement (round 0 vs round 1)
+## Run-to-run agreement (run 1 vs run 2)
 
 109/136 headline medians agree within their stated error bars (startup: IQR; frame percentiles: cross-pass spread, floored at 5%; idle PSS: max(3%, 1 MiB)).
 
-| framework | app | metric | round 0 | round 1 | abs delta | error bar | agree |
+| framework | app | metric | run 1 | run 2 | abs delta | error bar | agree |
 |---|---|---|---|---|---|---|---|
 | lumen | hello | startup ext ms | 104.108 | 109.639 | 5.531 | 6.492 | yes |
 | lumen | hello | idle PSS kB | 64394 | 63647 | 747 | 1931.82 | yes |

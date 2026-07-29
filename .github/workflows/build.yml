@@ -1,0 +1,148 @@
+# Compile check for every framework's benchmark app.
+#
+# This does not measure anything: no display, no compositor, no timing. It only
+# confirms that each framework's app still builds. Each framework is its own
+# matrix job; fail-fast is off so one framework breaking or missing does not
+# hide the others.
+#
+# Lumen is skipped on purpose: the Lumen framework repo is private, so its
+# benchmark cannot be fetched or built here.
+
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.framework }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - framework: egui
+            kind: rust
+            dir: egui
+          - framework: iced
+            kind: rust
+            dir: iced
+          - framework: slint
+            kind: rust
+            dir: slint
+          - framework: tauri
+            kind: rust-tauri
+            dir: tauri/src-tauri
+          - framework: qt-widgets
+            kind: cmake-qt
+          - framework: gtk4
+            kind: cmake-gtk
+          - framework: flutter
+            kind: flutter
+          - framework: lumen
+            kind: skip
+    steps:
+      - name: Check out the repository
+        if: matrix.kind != 'skip'
+        uses: actions/checkout@v4
+
+      # Lumen: nothing to build here.
+      - name: Skip Lumen (private framework repo)
+        if: matrix.kind == 'skip'
+        run: |
+          echo "skipped: Lumen framework repo is private, so its benchmark cannot build in CI."
+
+      # System packages per framework.
+      - name: Install Tauri system dependencies
+        if: matrix.kind == 'rust-tauri'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            librsvg2-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install Qt system dependencies
+        if: matrix.kind == 'cmake-qt'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev \
+            cmake \
+            ninja-build \
+            g++ \
+            libgl1-mesa-dev
+
+      - name: Install GTK4 system dependencies
+        if: matrix.kind == 'cmake-gtk'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev \
+            cmake \
+            ninja-build \
+            gcc \
+            pkg-config
+
+      - name: Install Flutter Linux dependencies
+        if: matrix.kind == 'flutter'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgtk-3-dev \
+            liblzma-dev
+
+      # Rust toolchain + cache for the Rust frameworks.
+      - name: Install the Rust toolchain
+        if: matrix.kind == 'rust' || matrix.kind == 'rust-tauri'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts
+        if: matrix.kind == 'rust' || matrix.kind == 'rust-tauri'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.dir }}
+
+      - name: Build the Rust app
+        if: matrix.kind == 'rust' || matrix.kind == 'rust-tauri'
+        working-directory: ${{ matrix.dir }}
+        run: cargo build --all-targets
+
+      # CMake frameworks (Qt Widgets, GTK4).
+      - name: Configure and build with CMake
+        if: matrix.kind == 'cmake-qt' || matrix.kind == 'cmake-gtk'
+        run: |
+          cmake -S ${{ matrix.framework }} -B ${{ matrix.framework }}/build -G Ninja
+          cmake --build ${{ matrix.framework }}/build
+
+      # Flutter Linux desktop build.
+      - name: Install Flutter
+        if: matrix.kind == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build the Flutter Linux app
+        if: matrix.kind == 'flutter'
+        working-directory: flutter
+        run: |
+          flutter config --enable-linux-desktop
+          flutter pub get
+          flutter build linux --debug

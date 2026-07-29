@@ -35,9 +35,13 @@ Usage:
     harness/bench.py build                    # build + size everything
     harness/bench.py calibrate                # measurement-error anchors
     harness/bench.py measure [fw] [app] [--round N] [--cold]
-    harness/bench.py all                      # build + calibrate + round 0 + report
-    harness/bench.py validate                 # calibrate + rounds 0 and 1 + agreement
+    harness/bench.py all                      # build + calibrate + one run + report
+    harness/bench.py validate                 # calibrate + two runs + agreement
     harness/bench.py report                   # rewrite results.md from results.json
+
+The suite runs the whole matrix one or more times; each full pass is a run.
+--round N selects a pass, 0-indexed internally; results.md labels the first
+pass "run 1", the second "run 2", and so on.
 """
 
 import hashlib
@@ -1682,10 +1686,10 @@ def size_str(sizes, fw, app):
 
 
 def agreement_rows(results):
-    """Round-0 vs round-1 medians for every headline metric.
+    """Run-1 vs run-2 medians for every headline metric.
 
-    Error bars: startup -> max of the two rounds' IQRs; frame
-    percentiles -> max of the two rounds' cross-pass spreads (floored at
+    Error bars: startup -> max of the two runs' IQRs; frame
+    percentiles -> max of the two runs' cross-pass spreads (floored at
     5% of the metric); memory -> max(3%, 1 MiB)."""
     rounds = results.get("rounds", [])
     if len(rounds) < 2:
@@ -1699,7 +1703,7 @@ def agreement_rows(results):
         delta = abs(m1 - m0)
         rows.append({
             "fw": fw, "app": app, "metric": metric,
-            "round0": m0, "round1": m1, "delta": round(delta, 3),
+            "run1": m0, "run2": m1, "delta": round(delta, 3),
             "error_bar": round(bar, 3),
             "agree": delta <= bar,
         })
@@ -1761,21 +1765,28 @@ def write_report(results):
              f"Lumen: {env.get('lumen_git', {}).get('sha', '?')[:12]}"
              f"{' (dirty)' if env.get('lumen_git', {}).get('dirty') else ''}")
     L.append("")
-    L.append("Primary numbers below are **round 0**; the run-to-run agreement "
-             "table compares round 0 vs round 1. Values are medians; +/- is "
-             "half the IQR (startup, n=15) or half the cross-pass spread "
-             "(frame percentiles, 3 passes). (!) = unstable "
-             f"(IQR/median > {UNSTABLE_IQR_FRACTION:.0%}); (No) = N Tukey "
-             "outliers retained. Memory is PSS in MiB with RSS in "
-             "parentheses (both from /proc, idle = first frame + 2 s).")
+    L.append("The suite runs the whole matrix twice; each full pass is a run. "
+             "The tables below report run 1. The run-to-run agreement table near "
+             "the end checks that a second identical run (run 2) lands within the "
+             "stated error bars. Values are medians; +/- is half the IQR "
+             "(interquartile range) for startup (n=15) or half the cross-pass "
+             "spread for frame percentiles (3 passes). (!) marks an unstable cell "
+             f"(IQR/median > {UNSTABLE_IQR_FRACTION:.0%}). (No) means N Tukey-fence "
+             "outliers were kept in the sample, e.g. (2o) = 2 outliers. Memory is "
+             "PSS (proportional set size) in MiB with RSS (resident set size) in "
+             "parentheses, both from /proc, idle = first frame + 2 s. In the binary "
+             "column, Lumen is shown as `<n> MiB rt +<n> KiB app`: rt is the shared "
+             "lumenc runtime, app is the compiled app payload; every other framework "
+             "shows a single stripped binary size.")
     L.append("")
     L.append("Startup is measured the same way across all eight frameworks: "
              "external = harness CLOCK_MONOTONIC spawn -> first `first_frame` "
              "stdout marker; self = the app's own CLOCK_MONOTONIC "
              "exec/main -> first-frame (`startup_ms:`). This includes Lumen, "
              "whose windowed backend emits both markers under "
-             "`LUMEN_BOOT_TRACE`; there is no MCP connect/poll in the "
-             "startup path (MCP drives only the scroll/interact passes). See "
+             "`LUMEN_BOOT_TRACE`; there is no MCP (the harness control channel "
+             "to Lumen) connect/poll in the startup path (MCP drives only the "
+             "scroll/interact passes). See "
              "the clock-sources table and caveats below.")
     L.append("")
 
@@ -1868,18 +1879,18 @@ def write_report(results):
     rows = agreement_rows(results)
     if rows:
         n_ok = sum(1 for r in rows if r["agree"])
-        L.append("## Run-to-run agreement (round 0 vs round 1)")
+        L.append("## Run-to-run agreement (run 1 vs run 2)")
         L.append("")
         L.append(f"{n_ok}/{len(rows)} headline medians agree within their "
                  "stated error bars (startup: IQR; frame percentiles: "
                  "cross-pass spread, floored at 5%; idle PSS: max(3%, 1 MiB)).")
         L.append("")
-        L.append("| framework | app | metric | round 0 | round 1 | abs delta | "
+        L.append("| framework | app | metric | run 1 | run 2 | abs delta | "
                  "error bar | agree |")
         L.append("|---|---|---|---|---|---|---|---|")
         for r in rows:
             L.append(f"| {r['fw']} | {r['app']} | {r['metric']} "
-                     f"| {r['round0']} | {r['round1']} | {r['delta']} "
+                     f"| {r['run1']} | {r['run2']} | {r['delta']} "
                      f"| {r['error_bar']} | {'yes' if r['agree'] else 'no'} |")
         L.append("")
 
