@@ -7,8 +7,8 @@
 # committed results.json. Each framework is its own matrix job; fail-fast is
 # off so one framework breaking or missing does not hide the others.
 #
-# Lumen is skipped on purpose: the Lumen framework repo is private, so its
-# benchmark cannot be fetched or built here.
+# The lumen job builds lumenc from the framework repo; the benchmark apps
+# themselves are .lmn markup with nothing to compile.
 
 name: build
 
@@ -79,17 +79,44 @@ jobs:
           - framework: flutter
             kind: flutter
           - framework: lumen
-            kind: skip
+            kind: lumen
     steps:
       - name: Check out the repository
-        if: matrix.kind != 'skip'
         uses: actions/checkout@v4
 
-      # Lumen: nothing to build here.
-      - name: Skip Lumen (private framework repo)
-        if: matrix.kind == 'skip'
+      # Lumen: build lumenc from the framework repo. The benchmark apps are
+      # .lmn markup and compile inside lumenc at run time.
+      - name: Check out the Lumen framework repository
+        if: matrix.kind == 'lumen'
+        uses: actions/checkout@v4
+        with:
+          repository: lumen-fx/lumen
+          path: lumen-framework
+
+      - name: Install Lumen system dependencies
+        if: matrix.kind == 'lumen'
         run: |
-          echo "skipped: Lumen framework repo is private, so its benchmark cannot build in CI."
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev \
+            libasound2-dev \
+            libxdo-dev \
+            pkg-config
+
+      - name: Install the Rust toolchain for Lumen
+        if: matrix.kind == 'lumen'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts for Lumen
+        if: matrix.kind == 'lumen'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: lumen-framework
+
+      - name: Build lumenc
+        if: matrix.kind == 'lumen'
+        working-directory: lumen-framework
+        run: cargo build -p lumenc
 
       # System packages per framework.
       - name: Install Tauri system dependencies
@@ -138,6 +165,15 @@ jobs:
             pkg-config \
             libgtk-3-dev \
             liblzma-dev
+
+      # Slint's font stack links against fontconfig.
+      - name: Install Slint system dependencies
+        if: matrix.framework == 'slint'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev \
+            pkg-config
 
       # Rust toolchain + cache for the Rust frameworks.
       - name: Install the Rust toolchain

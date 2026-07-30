@@ -156,8 +156,9 @@ python3 harness/test_stats.py
 
 The suite reads these environment variables:
 
-* `LUMEN_REPO`: path to the Lumen framework checkout. If it is absent,
-  the lumen rows are skipped with a note. Default: a `Lumen` directory
+* `LUMEN_REPO`: path to a Lumen framework checkout
+  (`git clone https://github.com/lumen-fx/lumen`). If it is absent, the
+  lumen rows are skipped with a note. Default: a `Lumen` directory
   beside this repo.
 * `BENCH_CARGO_TARGET_DIR`: cargo target dir for the Rust builds. Kept
   separate from any `CARGO_TARGET_DIR` your shell exports so a shared
