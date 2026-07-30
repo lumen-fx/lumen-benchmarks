@@ -1,9 +1,11 @@
-# Compile check for every framework's benchmark app.
+# Compile check for every framework's benchmark app, plus the harness's own
+# statistics tests.
 #
 # This does not measure anything: no display, no compositor, no timing. It only
-# confirms that each framework's app still builds. Each framework is its own
-# matrix job; fail-fast is off so one framework breaking or missing does not
-# hide the others.
+# confirms that each framework's app still builds, that the statistics helpers
+# behave on synthetic data, and that the report generator still renders the
+# committed results.json. Each framework is its own matrix job; fail-fast is
+# off so one framework breaking or missing does not hide the others.
 #
 # Lumen is skipped on purpose: the Lumen framework repo is private, so its
 # benchmark cannot be fetched or built here.
@@ -23,6 +25,34 @@ permissions:
   contents: read
 
 jobs:
+  # Harness statistics and report generator: pure Python, no display and no
+  # measurement.
+  harness:
+    name: harness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3'
+
+      - name: Run the statistics tests
+        run: python3 harness/test_stats.py
+
+      - name: Render the committed results with the report generator
+        env:
+          BENCH_RESULTS_JSON: results.json
+          BENCH_RESULTS_MD: ${{ runner.temp }}/results.md
+        run: |
+          python3 harness/bench.py report
+          test -s "$BENCH_RESULTS_MD"
+
+      - name: Confirm the recorded results were not rewritten
+        run: git diff --exit-code
+
   build:
     name: ${{ matrix.framework }}
     runs-on: ubuntu-latest

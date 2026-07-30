@@ -111,6 +111,47 @@ or equivalent) is needed for the GL present path. Under a software-only
 stack Lumen's wgpu-Vulkan present path has no usable adapter; the other
 frameworks still render.
 
+## What the numbers are
+
+Every metric is measured many times, and the report leads with the
+**median** (the middle measurement) plus a **spread** (how much the
+repeats disagreed). Point estimates on their own hide whether a
+difference is real, so each headline number also carries its minimum (the
+noise floor) and, for startup, a confidence interval.
+
+* **startup**: process spawn to first presented frame, 20 launches per
+  cell by default. Reported as median, IQR, MAD, min and a 95% bootstrap
+  confidence interval on the median. When two frameworks' intervals
+  overlap, the report says so: their difference is inside the noise and
+  should not be quoted.
+* **scroll / interact**: 3 passes per cell; each pass yields p50/p95/p99
+  frame intervals, and the report gives the median across passes with the
+  pass-to-pass spread.
+* **memory**: PSS and RSS at fixed points, over 3 separate launches, so
+  the idle footprint comes with a spread instead of a single sample.
+* **outliers**: counted with Tukey fences (1.5 x IQR beyond the middle
+  half) and reported next to the number as `(2o)`. They are never
+  dropped, and every raw sample stays in `results.json`.
+* **warmup**: the first launch of each startup cell and the first 30
+  frames of each pass are discarded, so recorded numbers are
+  steady-state. `results.md` states the full policy.
+* **run-to-run agreement**: `./run.sh validate` measures the whole matrix
+  twice and reports the relative difference of the two runs' medians per
+  metric, calling out anything above 5%.
+
+`results.json` keeps each metric's raw per-iteration samples plus the
+settings that produced them, so any other statistic can be recomputed
+without measuring again. Its layout carries a `schema_version`; the
+report generator reads older files too, recomputing what they did not
+record from their stored samples.
+
+The statistics helpers live in `harness/stats.py` and are covered by
+tests that need no display, compositor or build:
+
+```sh
+python3 harness/test_stats.py
+```
+
 ## Configuration
 
 The suite reads these environment variables:
@@ -133,7 +174,46 @@ The suite reads these environment variables:
   host it disables pinning and shares all cores. The chosen set is
   printed at startup and recorded in `results.json`.
 
-Results land in `results.md` (with a fairness-caveats section) and
-`results.json`. Charts generated from a run live in `charts/`. Build
+Sample counts, in iterations per cell. Raising them narrows the
+confidence intervals and costs wall time; every one is recorded in
+`results.json` next to the numbers it produced.
+
+| variable | default | what it controls |
+|---|---|---|
+| `BENCH_STARTUP_RUNS` | 20 | recorded launches per startup cell |
+| `BENCH_STARTUP_WARMUP` | 1 | launches discarded before recording starts |
+| `BENCH_SCROLL_PASSES` | 3 | scroll passes per cell |
+| `BENCH_SCROLL_SECONDS` | 6 | seconds of scrolling per pass |
+| `BENCH_INTERACT_PASSES` | 3 | interact passes per cell |
+| `BENCH_INTERACT_CYCLES` | 4 | focus-walk + toggle cycles per interact pass |
+| `BENCH_FRAME_WARMUP_FRAMES` | 30 | frames discarded at the start of each pass |
+| `BENCH_MEM_RUNS` | 3 | launches per idle-memory cell |
+| `BENCH_MEM_WARMUP` | 0 | idle-memory launches discarded |
+| `BENCH_CALIB_RUNS` | 30 | calibration-probe launches |
+| `BENCH_CALIB_WARMUP` | 1 | calibration launches discarded |
+
+Statistics and thresholds:
+
+| variable | default | what it controls |
+|---|---|---|
+| `BENCH_BOOTSTRAP_RESAMPLES` | 10000 | resamples behind each confidence interval |
+| `BENCH_CI_CONFIDENCE` | 0.95 | confidence level of those intervals |
+| `BENCH_BOOTSTRAP_SEED` | fixed | random seed, so a re-render gives the same interval |
+| `BENCH_UNSTABLE_IQR_FRACTION` | 0.05 | IQR/median above which a cell is marked `(!)` |
+| `BENCH_AGREEMENT_TOLERANCE` | 0.05 | relative difference above which run 1 and run 2 are called out as disagreeing |
+| `BENCH_KEEP_FRAME_SAMPLES` | on | keep raw per-frame deltas in `results.json` (set to `0` for a smaller file) |
+
+Output paths, useful for rendering a report without touching the
+repository's files:
+
+| variable | default | what it controls |
+|---|---|---|
+| `BENCH_RESULTS_JSON` | `results.json` | where recorded data is read and written |
+| `BENCH_RESULTS_MD` | `results.md` | where the report is written |
+
+Results land in `results.md` (with a methodology section explaining every
+column, and a fairness-caveats section) and `results.json`. `./run.sh
+report` re-renders `results.md` from `results.json` and never rewrites
+the recorded data. Charts generated from a run live in `charts/`. Build
 outputs (each framework's `build`/`target`/`.dart_tool`, `harness/out`)
 are gitignored and not part of the repo.

@@ -5,8 +5,10 @@ Four apps (hello / list / forms / textview), each implemented in eight
 frameworks (Lumen, Slint, egui, iced, Qt6 Widgets, GTK4 C, Flutter,
 Tauri), measured the same way:
 
-  * startup: process spawn -> first presented frame, n=15 (+1 discarded
-    warmup), median + IQR, Tukey-fence outlier count, unstable flag
+  * startup: process spawn -> first presented frame, repeated
+    BENCH_STARTUP_RUNS times (default 20) after BENCH_STARTUP_WARMUP
+    discarded launches; median, IQR, MAD, min, bootstrap confidence
+    interval on the median, Tukey-fence outlier count
   * scroll (list, textview): 3 passes x 6 s of programmatic scrolling at
     1000 px/s; per-frame deltas -> p50/p95/p99 per pass, cross-pass median
     + spread
@@ -14,8 +16,17 @@ Tauri), measured the same way:
     toggle-all), one step / 16 ms; same frame-delta stats
   * memory: PSS primary (smaps_rollup) + RSS secondary, at two fixed
     points: idle (2 s after first frame) and post-workload (right after a
-    pass ends; for hello, 5 s after first frame)
+    pass ends; for hello, 5 s after first frame); the idle point is
+    repeated over BENCH_MEM_RUNS separate launches (default 3)
   * stripped binary size per app
+
+Every metric keeps its raw per-iteration samples in results.json, so any
+statistic can be recomputed later without measuring again. Sample counts,
+warmup counts and thresholds are environment knobs, recorded next to the
+numbers they produced by config_block(); see the Configuration section of
+README.md. Outlier and warmup policy are stated once, in OUTLIER_POLICY
+and WARMUP_POLICY, and printed into results.md from there. The
+statistics themselves live in stats.py, with tests in test_stats.py.
 
 All eight frameworks run windowed under the same nested headless
 compositor (weston --backend=headless --renderer=gl, fallback Xvfb);
@@ -37,7 +48,9 @@ Usage:
     harness/bench.py measure [fw] [app] [--round N] [--cold]
     harness/bench.py all                      # build + calibrate + one run + report
     harness/bench.py validate                 # calibrate + two runs + agreement
-    harness/bench.py report                   # rewrite results.md from results.json
+    harness/bench.py report                   # re-render results.md from
+                                              # results.json; recorded data
+                                              # is read, never rewritten
 
 The suite runs the whole matrix one or more times; each full pass is a run.
 --round N selects a pass, 0-indexed internally; results.md labels the first
@@ -58,12 +71,27 @@ import time
 import queue
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+import stats as st  # noqa: E402  (needs the path insert above)
+
+ROOT = HERE.parent
 OUT = ROOT / "harness" / "out"
 BIN_OUT = OUT / "bin"
 CORPUS = OUT / "corpus.txt"
-RESULTS_JSON = ROOT / "results.json"
-RESULTS_MD = ROOT / "results.md"
+# Output paths. Overridable so a report can be rendered somewhere else
+# (CI check, a scratch copy) without touching the repo's files.
+RESULTS_JSON = Path(os.environ.get("BENCH_RESULTS_JSON",
+                                   str(ROOT / "results.json")))
+RESULTS_MD = Path(os.environ.get("BENCH_RESULTS_MD", str(ROOT / "results.md")))
+
+# results.json layout version. 1: startup/calibration samples under
+# `runs`, no min/MAD/CI, single idle-memory sample, no per-frame samples.
+# 2: samples under `samples`, min/MAD/outlier counts everywhere, bootstrap
+# CI on startup medians, repeated idle-memory launches, raw frame deltas,
+# recorded sample/warmup counts. The report generator reads both.
+SCHEMA_VERSION = 2
 
 # Cargo target dir for the Rust builds here. Kept separate from any
 # CARGO_TARGET_DIR the surrounding shell exports: building into a shared
@@ -85,15 +113,81 @@ TAURI_TARGET = Path(os.environ.get("BENCH_TAURI_TARGET_DIR",
 LUMEN_MCP_PORT = 7941
 
 APPS = ("hello", "list", "forms", "textview")
-STARTUP_RUNS = 15          # recorded runs; +1 warmup discarded
-SCROLL_PASSES = 3
-SCROLL_SECONDS = 6.0
+
+
+def _env_int(name, default):
+    try:
+        return max(0, int(os.environ[name]))
+    except (KeyError, ValueError):
+        return default
+
+
+def _env_float(name, default):
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
+def _env_bool(name, default):
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+# --- Sample counts -------------------------------------------------------
+# How many times each metric is measured. Every count is recorded in
+# results.json under `config`, so a report always states the n behind its
+# numbers. Startup dominates wall time: one launch costs roughly
+# 0.3 s + the app's own startup, so 20 launches x 32 cells is a few
+# minutes of the round.
+STARTUP_RUNS = _env_int("BENCH_STARTUP_RUNS", 20)
+SCROLL_PASSES = _env_int("BENCH_SCROLL_PASSES", 3)
+SCROLL_SECONDS = _env_float("BENCH_SCROLL_SECONDS", 6.0)
 SCROLL_PX_PER_S = 1000.0
-INTERACT_PASSES = 3
-INTERACT_CYCLES = 4
+INTERACT_PASSES = _env_int("BENCH_INTERACT_PASSES", 3)
+INTERACT_CYCLES = _env_int("BENCH_INTERACT_CYCLES", 4)
 INTERACT_STEP_S = 0.016
+MEM_RUNS = _env_int("BENCH_MEM_RUNS", 3)
+CALIB_RUNS = _env_int("BENCH_CALIB_RUNS", 30)
 LUMEN_SCROLL_INTERVAL_S = 1.0 / 60.0
 LUMEN_TICK_SAMPLE_S = 0.0005   # 0.5 ms monotonic lumen.tick sampling
+
+# --- Warmup --------------------------------------------------------------
+# Iterations thrown away before recording starts, per metric class. See
+# WARMUP_POLICY for what each one is for. Warmup values are still written
+# to results.json (as `warmup_samples` / `warmup_frames`), just kept out of
+# the statistics.
+STARTUP_WARMUP_RUNS = _env_int("BENCH_STARTUP_WARMUP", 1)
+CALIB_WARMUP_RUNS = _env_int("BENCH_CALIB_WARMUP", 1)
+FRAME_WARMUP_FRAMES = _env_int("BENCH_FRAME_WARMUP_FRAMES", 30)
+MEM_WARMUP_RUNS = _env_int("BENCH_MEM_WARMUP", 0)
+
+WARMUP_POLICY = """\
+* **startup**: the first BENCH_STARTUP_WARMUP launches of a cell (default
+  1) are discarded. They pay for cold file-cache and dynamic-linker work
+  the later launches do not, so every recorded startup number is a
+  warm-cache launch. `--cold` mode instead evicts the file cache before
+  every launch, warmup included, and says so on the cell.
+* **scroll / interact frames**: the first BENCH_FRAME_WARMUP_FRAMES frames
+  of each pass (default 30, about half a second at 60 Hz) are discarded.
+  Those frames carry first-scroll glyph/texture caching, not steady-state
+  cost. Whole passes are never discarded.
+* **memory**: no iterations are discarded. Each idle-memory launch is
+  sampled at a fixed point (first frame + 2 s), which is the warmup: the
+  app has finished starting and has not been touched since.
+* **calibration**: the first BENCH_CALIB_WARMUP launches of the probe
+  binary (default 1) are discarded, same reason as startup."""
+
+OUTLIER_POLICY = """\
+Outliers are counted, never dropped. A sample is an outlier when it falls
+outside the Tukey fences: below q1 - 1.5 x IQR or above q3 + 1.5 x IQR,
+where q1 and q3 bound the middle half of the samples. The count appears
+next to the affected number as `(2o)`, and every sample, outliers
+included, stays in results.json. Nothing in the report is computed on a
+filtered sample set: the median and the IQR already resist the extremes,
+and the outlier count tells you how much interference the run saw."""
 
 # CPU pinning. Measured apps, the compositor, and the harness get
 # disjoint CPU sets when the machine has enough cores; on a small machine
@@ -148,7 +242,45 @@ else:
 WESTON_SOCKET = "wayland-bench"
 XVFB_DISPLAY = ":97"
 
-UNSTABLE_IQR_FRACTION = 0.05   # IQR/median above this flags the cell
+# --- Thresholds ----------------------------------------------------------
+# IQR/median above this flags the cell as unstable in the report.
+UNSTABLE_IQR_FRACTION = _env_float("BENCH_UNSTABLE_IQR_FRACTION", 0.05)
+# Bootstrap confidence interval on startup medians.
+CI_CONFIDENCE = _env_float("BENCH_CI_CONFIDENCE", st.DEFAULT_CONFIDENCE)
+CI_RESAMPLES = _env_int("BENCH_BOOTSTRAP_RESAMPLES", st.DEFAULT_RESAMPLES)
+CI_SEED = _env_int("BENCH_BOOTSTRAP_SEED", st.DEFAULT_SEED)
+# Run-to-run agreement: two runs agree on a metric when the relative
+# difference of their medians is at or below this fraction.
+AGREEMENT_TOLERANCE = _env_float("BENCH_AGREEMENT_TOLERANCE", 0.05)
+# Keep raw per-frame deltas in results.json (a full round adds a few MB).
+KEEP_FRAME_SAMPLES = _env_bool("BENCH_KEEP_FRAME_SAMPLES", True)
+
+
+def config_block():
+    """Everything that shapes the numbers, recorded next to them."""
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "startup_runs": STARTUP_RUNS,
+        "startup_warmup_runs": STARTUP_WARMUP_RUNS,
+        "scroll_passes": SCROLL_PASSES,
+        "scroll_seconds": SCROLL_SECONDS,
+        "interact_passes": INTERACT_PASSES,
+        "interact_cycles": INTERACT_CYCLES,
+        "frame_warmup_frames": FRAME_WARMUP_FRAMES,
+        "mem_runs": MEM_RUNS,
+        "mem_warmup_runs": MEM_WARMUP_RUNS,
+        "calibration_runs": CALIB_RUNS,
+        "calibration_warmup_runs": CALIB_WARMUP_RUNS,
+        "lumen_tick_sample_ms": LUMEN_TICK_SAMPLE_S * 1000,
+        "unstable_iqr_fraction": UNSTABLE_IQR_FRACTION,
+        "ci_confidence": CI_CONFIDENCE,
+        "ci_resamples": CI_RESAMPLES,
+        "ci_seed": CI_SEED,
+        "ci_method": "percentile bootstrap on the median",
+        "agreement_tolerance": AGREEMENT_TOLERANCE,
+        "outlier_rule": "Tukey fences, k=1.5; counted, kept in the samples",
+        "keep_frame_samples": KEEP_FRAME_SAMPLES,
+    }
 
 
 def cargo_env():
@@ -244,16 +376,43 @@ def try_set_governor(target="performance"):
     return f"'{target}' on cpus {changed}"
 
 
-def capture_env():
-    u = os.uname()
+def _cpu_attr(cpu, name):
+    return _read(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/{name}")
+
+
+def capture_cpu():
+    """CPU facts that change the numbers: model, how many cores, which
+    ones the apps are pinned to, and how those cores are clocked."""
     model = None
     for line in (_read("/proc/cpuinfo") or "").splitlines():
         if line.startswith("model name"):
             model = line.split(":", 1)[1].strip()
             break
-    governors = sorted({
-        _read(f"/sys/devices/system/cpu/cpu{c}/cpufreq/scaling_governor") or "?"
-        for c in range(N_CPUS)})
+    app_governors = sorted({_cpu_attr(c, "scaling_governor") or "?"
+                            for c in sorted(APP_CPUS)})
+    max_khz = [int(v) for v in (_cpu_attr(c, "scaling_max_freq")
+                                for c in sorted(APP_CPUS)) if v]
+    return {
+        "model": model,
+        "count": N_CPUS,
+        "app_cpus": sorted(APP_CPUS),
+        "display_cpus": sorted(DISPLAY_CPUS),
+        "harness_cpus": sorted(HARNESS_CPUS),
+        "pin_note": CPU_PIN_NOTE,
+        "pinned_with_taskset": bool(_taskset_prefix()),
+        "app_cpu_governors": app_governors,
+        "all_governors": sorted({
+            _cpu_attr(c, "scaling_governor") or "?" for c in range(N_CPUS)}),
+        "scaling_driver": _cpu_attr(sorted(APP_CPUS)[0], "scaling_driver"),
+        "app_cpu_max_mhz": (max(max_khz) // 1000) if max_khz else None,
+        "cpufreq_boost": _read("/sys/devices/system/cpu/cpufreq/boost"),
+        "smt_control": _read("/sys/devices/system/cpu/smt/control"),
+    }
+
+
+def capture_env():
+    u = os.uname()
+    cpu = capture_cpu()
     meminfo = {}
     for line in (_read("/proc/meminfo") or "").splitlines():
         k, _, v = line.partition(":")
@@ -266,13 +425,16 @@ def capture_env():
         "captured": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         "hostname": u.nodename,
         "kernel": u.release,
-        "cpu_model": model,
-        "cpu_count": N_CPUS,
-        "governors": governors,
-        "cpufreq_boost": _read("/sys/devices/system/cpu/cpufreq/boost"),
-        "app_cpus": sorted(APP_CPUS),
-        "display_cpus": sorted(DISPLAY_CPUS),
-        "harness_cpus": sorted(HARNESS_CPUS),
+        "cpu": cpu,
+        # Flat aliases kept so a reader (and the schema-1 report path) finds
+        # the same facts where they have always been.
+        "cpu_model": cpu["model"],
+        "cpu_count": cpu["count"],
+        "governors": cpu["all_governors"],
+        "cpufreq_boost": cpu["cpufreq_boost"],
+        "app_cpus": cpu["app_cpus"],
+        "display_cpus": cpu["display_cpus"],
+        "harness_cpus": cpu["harness_cpus"],
         "cpu_pin_note": CPU_PIN_NOTE,
         "mem": meminfo,
         "loadavg_start": _read("/proc/loadavg"),
@@ -285,7 +447,13 @@ def capture_env():
         "flutter": ((_cmd_out(["flutter", "--version"]) or "").splitlines()
                     or [None])[0],
         "rustc": _cmd_out(["rustc", "-V"]),
+        "cc": ((_cmd_out(["cc", "--version"]) or "").splitlines() or [None])[0],
+        "cmake": ((_cmd_out(["cmake", "--version"]) or "").splitlines()
+                  or [None])[0],
         "python": sys.version.split()[0],
+        # Per-framework toolchain versions, captured whether or not this
+        # invocation built anything.
+        "toolchains": toolkit_versions(),
         "lumen_git": {"sha": lumen_sha, "dirty": lumen_dirty},
         "lockfile_sha256_16": {
             "egui": _sha256(ROOT / "egui" / "Cargo.lock"),
@@ -339,6 +507,48 @@ def _stripped_size(src):
     shutil.copy2(src, dst)
     subprocess.run(["strip", str(dst)], check=True)
     return dst.stat().st_size
+
+
+def _lock_version(lock, pkg):
+    """Version of `pkg` as pinned by a Cargo.lock."""
+    if not Path(lock).exists():
+        return None
+    lines = Path(lock).read_text().splitlines()
+    for i, l in enumerate(lines):
+        if l == f'name = "{pkg}"' and i + 1 < len(lines):
+            return lines[i + 1].split('"')[1]
+    return None
+
+
+def toolkit_versions():
+    """The toolkit version behind each framework's rows: the thing that
+    changes when a number changes for a reason other than the app."""
+    versions = {}
+    sha = _cmd_out(["git", "-C", str(LUMEN_REPO), "rev-parse", "--short", "HEAD"])
+    if sha:
+        versions["lumen"] = f"git {sha}"
+    for name, pkg in (("slint", "slint"), ("egui", "eframe"), ("iced", "iced")):
+        v = _lock_version(ROOT / name / "Cargo.lock", pkg)
+        if v:
+            versions[name] = f"{pkg} {v}"
+    for name, pkg in (("qt-widgets", "Qt6Widgets"), ("gtk4", "gtk4")):
+        v = _cmd_out(["pkg-config", "--modversion", pkg])
+        if v:
+            versions[name] = f"{pkg} {v}"
+    fl = (_cmd_out(["flutter", "--version"]) or "").splitlines()
+    if fl:
+        versions["flutter"] = fl[0].strip()  # e.g. "Flutter 3.44.7 - channel ..."
+    # Tauri: crate version from its Cargo.lock + the system webkit2gtk.
+    tver = _lock_version(ROOT / "tauri" / "src-tauri" / "Cargo.lock", "tauri")
+    wk = _cmd_out(["pkg-config", "--modversion", "webkit2gtk-4.1"])
+    parts = []
+    if tver:
+        parts.append(f"tauri {tver}")
+    if wk:
+        parts.append(f"webkit2gtk {wk}")
+    if parts:
+        versions["tauri"] = " - ".join(parts)
+    return versions
 
 
 def _preflight():
@@ -464,44 +674,7 @@ def build_all():
         except Exception as e:
             log(f"skip sizes for {fw}: {e}")
 
-    # Toolkit versions for the report.
-    versions = {}
-    sha = _cmd_out(["git", "-C", str(LUMEN_REPO), "rev-parse", "--short", "HEAD"])
-    if sha:
-        versions["lumen"] = f"git {sha}"
-    for name, pkg in (("slint", "slint"), ("egui", "eframe"), ("iced", "iced")):
-        lock = ROOT / name / "Cargo.lock"
-        if lock.exists():
-            lines = lock.read_text().splitlines()
-            for i, l in enumerate(lines):
-                if l == f'name = "{pkg}"' and i + 1 < len(lines):
-                    versions[name] = pkg + " " + lines[i + 1].split('"')[1]
-                    break
-    for name, pkg in (("qt-widgets", "Qt6Widgets"), ("gtk4", "gtk4")):
-        v = _cmd_out(["pkg-config", "--modversion", pkg])
-        if v:
-            versions[name] = f"{pkg} {v}"
-    fl = (_cmd_out(["flutter", "--version"]) or "").splitlines()
-    if fl:
-        versions["flutter"] = fl[0].strip()  # e.g. "Flutter 3.44.7 - channel ..."
-    # Tauri: crate version from its Cargo.lock + the system webkit2gtk.
-    tlock = ROOT / "tauri" / "src-tauri" / "Cargo.lock"
-    tver = None
-    if tlock.exists():
-        lines = tlock.read_text().splitlines()
-        for i, l in enumerate(lines):
-            if l == 'name = "tauri"' and i + 1 < len(lines):
-                tver = lines[i + 1].split('"')[1]
-                break
-    wk = _cmd_out(["pkg-config", "--modversion", "webkit2gtk-4.1"])
-    parts = []
-    if tver:
-        parts.append(f"tauri {tver}")
-    if wk:
-        parts.append(f"webkit2gtk {wk}")
-    if parts:
-        versions["tauri"] = " - ".join(parts)
-    return sizes, versions
+    return sizes, toolkit_versions()
 
 
 # --------------------------------------------------------------------------
@@ -511,10 +684,31 @@ def build_all():
 class Display:
     """Nested headless compositor. Prefers weston, falls back to Xvfb."""
 
+    WIDTH = 1280
+    HEIGHT = 1024
+    # weston's headless backend has no physical display; it drives its
+    # output off a timer whose default rate is 60 Hz (--refresh changes
+    # it). Xvfb likewise reports a nominal 60 Hz mode. Recorded as
+    # nominal, not measured: there is no scanout to measure.
+    NOMINAL_REFRESH_HZ = 60
+
     def __init__(self):
         self.proc = None
         self.xvfb = None
         self.backend = None
+        self.command = None
+
+    def describe(self):
+        """What the apps presented to, for the environment block."""
+        return {
+            "backend": self.backend,
+            "nested_headless": True,
+            "command": " ".join(self.command) if self.command else None,
+            "size": f"{self.WIDTH}x{self.HEIGHT}",
+            "refresh_hz": self.NOMINAL_REFRESH_HZ,
+            "refresh_source": ("nominal: headless output timer, no physical "
+                               "display to scan out"),
+        }
 
     def _preexec(self):
         os.setsid()
@@ -525,8 +719,11 @@ class Display:
 
     def _start_xvfb(self):
         if shutil.which("Xvfb"):
+            cmd = ["Xvfb", XVFB_DISPLAY, "-screen", "0",
+                   f"{self.WIDTH}x{self.HEIGHT}x24"]
+            self.command = cmd
             self.xvfb = subprocess.Popen(
-                ["Xvfb", XVFB_DISPLAY, "-screen", "0", "1280x1024x24"],
+                cmd,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 preexec_fn=self._preexec)
             time.sleep(1.0)
@@ -554,7 +751,9 @@ class Display:
             # render fine under GL too (superset of the software path), so
             # all six share one compositor and present path.
             cmd = ["weston", "--backend=headless", "--renderer=gl",
-                   f"--socket={WESTON_SOCKET}", "--width=1280", "--height=1024"]
+                   f"--socket={WESTON_SOCKET}", f"--width={self.WIDTH}",
+                   f"--height={self.HEIGHT}"]
+            self.command = cmd
             self.proc = subprocess.Popen(
                 cmd, env=env, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, preexec_fn=self._preexec)
@@ -799,63 +998,73 @@ def evict_page_cache(fw_name, app):
 # Statistics
 # --------------------------------------------------------------------------
 
-def quartiles(vals):
-    if not vals:
-        return (None, None, None)
-    q = statistics.quantiles(vals, n=4, method="inclusive") if len(vals) > 1 \
-        else [vals[0]] * 3
-    return (q[0], statistics.median(vals), q[2])
+def run_stats(vals, ci=False, warmup=None):
+    """Robust summary of repeated measurements of one metric.
+
+    median, IQR, MAD, min/max, Tukey-fence outliers (kept), the unstable
+    flag, and the raw samples. With ci=True it also carries a bootstrap
+    confidence interval on the median. Discarded warmup values ride along
+    under `warmup_samples` so nothing measured is thrown away."""
+    out = st.summarize(vals, unstable_iqr_fraction=UNSTABLE_IQR_FRACTION,
+                       ci=ci, confidence=CI_CONFIDENCE,
+                       resamples=CI_RESAMPLES, seed=CI_SEED)
+    if warmup:
+        out["warmup_samples"] = [round(v, 3) for v in warmup]
+        out["warmup_discarded"] = len(warmup)
+    return out
 
 
-def run_stats(vals):
-    """median + IQR + Tukey outliers + unstable flag over repeated runs."""
-    if not vals:
-        return {"n": 0}
-    q1, med, q3 = quartiles(vals)
-    iqr = q3 - q1
-    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-    outliers = [v for v in vals if v < lo or v > hi]
-    unstable = bool(med) and (iqr / med > UNSTABLE_IQR_FRACTION)
-    return {
-        "n": len(vals),
-        "runs": [round(v, 3) for v in vals],
-        "median": round(med, 3),
-        "q1": round(q1, 3),
-        "q3": round(q3, 3),
-        "iqr": round(iqr, 3),
-        "outliers": [round(v, 3) for v in outliers],
-        "unstable": unstable,
+def frame_stats(deltas, warmup_frames=None):
+    """Percentiles of one pass's frame intervals.
+
+    The first `warmup_frames` deltas are dropped before the statistics
+    (see WARMUP_POLICY) and reported as `warmup_frames`; the raw deltas,
+    warmup included, are kept when KEEP_FRAME_SAMPLES is on."""
+    if warmup_frames is None:
+        warmup_frames = FRAME_WARMUP_FRAMES
+    raw = list(deltas)
+    if not raw:
+        return {"frames": 0, "warmup_frames": 0}
+    # Never let warmup eat a whole pass: with fewer than twice the warmup
+    # count, keep everything and say so.
+    dropped = warmup_frames if len(raw) > 2 * warmup_frames else 0
+    kept = raw[dropped:]
+    out = {
+        "frames": len(kept),
+        "warmup_frames": dropped,
+        "p50_ms": round(st.percentile(kept, 50), 3),
+        "p95_ms": round(st.percentile(kept, 95), 3),
+        "p99_ms": round(st.percentile(kept, 99), 3),
+        "min_ms": round(min(kept), 3),
+        "max_ms": round(max(kept), 3),
+        "mean_ms": round(statistics.fmean(kept), 3),
+        "mad_ms": round(st.mad(kept), 3),
+        "n_outliers": len(st.outliers(kept)),
     }
-
-
-def frame_stats(deltas):
-    if not deltas:
-        return {"frames": 0}
-    ordered = sorted(deltas)
-
-    def pct(p):
-        idx = min(len(ordered) - 1, max(0, round(p / 100.0 * len(ordered)) - 1))
-        return ordered[idx]
-
-    return {
-        "frames": len(deltas),
-        "p50_ms": round(pct(50), 3),
-        "p95_ms": round(pct(95), 3),
-        "p99_ms": round(pct(99), 3),
-        "max_ms": round(ordered[-1], 3),
-        "mean_ms": round(statistics.fmean(deltas), 3),
-    }
+    if KEEP_FRAME_SAMPLES:
+        out["samples_ms"] = [round(v, 3) for v in raw]
+    return out
 
 
 def combine_passes(passes):
-    """Cross-pass median + spread for each percentile metric."""
+    """Cross-pass summary of each percentile metric.
+
+    Passes are the repeated unit here, so the headline number for, say,
+    p95 is the median of the passes' p95 values, with the pass-to-pass
+    spread (max - min) as its error bar and the smallest pass value as the
+    floor."""
     out = {"passes": passes}
     for key in ("p50_ms", "p95_ms", "p99_ms"):
         vals = [p[key] for p in passes if key in p]
-        if vals:
-            out[key + "_median"] = round(statistics.median(vals), 3)
-            out[key + "_spread"] = round(max(vals) - min(vals), 3)
+        if not vals:
+            continue
+        out[key + "_median"] = round(statistics.median(vals), 3)
+        out[key + "_spread"] = round(max(vals) - min(vals), 3)
+        out[key + "_min"] = round(min(vals), 3)
+        out[key + "_mad"] = round(st.mad(vals), 3)
+        out[key + "_n"] = len(vals)
     out["frames_total"] = sum(p.get("frames", 0) for p in passes)
+    out["warmup_frames_per_pass"] = FRAME_WARMUP_FRAMES
     return out
 
 
@@ -994,8 +1203,10 @@ def is_marker(line):
 
 def measure_startup_native(fw, app, display, cold=False):
     external, internal = [], []
+    warm_external, warm_internal = [], []
     spawn_deltas = []  # harness-vs-kernel spawn timestamp deltas
-    for i in range(STARTUP_RUNS + 1):  # +1 warmup, discarded
+    for i in range(STARTUP_WARMUP_RUNS + STARTUP_RUNS):
+        warmup = i < STARTUP_WARMUP_RUNS
         if cold:
             evict_page_cache(fw, app)
         t_spawn = time.monotonic()
@@ -1011,18 +1222,24 @@ def measure_startup_native(fw, app, display, cold=False):
                                      timeout=10)
         proc.wait(timeout=10)
         kill(proc)
-        if i == 0:
+        ext_ms = (ts - t_spawn) * 1000.0
+        self_ms = float(line2.split(":")[1]) if line2 else None
+        if warmup:
+            warm_external.append(ext_ms)
+            if self_ms is not None:
+                warm_internal.append(self_ms)
             time.sleep(0.3)
-            continue  # warmup
-        external.append((ts - t_spawn) * 1000.0)
-        if line2:
-            internal.append(float(line2.split(":")[1]))
+            continue
+        external.append(ext_ms)
+        if self_ms is not None:
+            internal.append(self_ms)
         if kstart is not None:
             spawn_deltas.append((t_spawn - kstart) * 1000.0)
         time.sleep(0.3)
     out = {
-        "external_ms": run_stats(external),
-        "self_ms": run_stats(internal) if internal else None,
+        "external_ms": run_stats(external, ci=True, warmup=warm_external),
+        "self_ms": (run_stats(internal, ci=True, warmup=warm_internal)
+                    if internal else None),
         "clock_note": "external: harness CLOCK_MONOTONIC spawn->marker; "
                       "self: app CLOCK_MONOTONIC main->first-frame callback",
     }
@@ -1138,9 +1355,11 @@ def measure_startup_lumen(app, display, cold=False):
     the old ~108 ms socket-overhead inflation is gone; the scroll/interact
     passes still drive Lumen over MCP separately."""
     external, internal = [], []
+    warm_external, warm_internal = [], []
     spawn_deltas = []
     boot_env = {"LUMEN_BOOT_TRACE": "1"}
-    for i in range(STARTUP_RUNS + 1):  # +1 warmup, discarded
+    for i in range(STARTUP_WARMUP_RUNS + STARTUP_RUNS):
+        warmup = i < STARTUP_WARMUP_RUNS
         if cold:
             evict_page_cache("lumen", app)
         # lumenc still starts its MCP server (unused for startup timing);
@@ -1159,18 +1378,24 @@ def measure_startup_lumen(app, display, cold=False):
         ts2, line2 = reader.wait_for(lambda l: l.startswith("startup_ms:"),
                                      timeout=10)
         kill(proc)
-        if i == 0:
+        ext_ms = (ts - t_spawn) * 1000.0
+        self_ms = float(line2.split(":")[1]) if line2 else None
+        if warmup:
+            warm_external.append(ext_ms)
+            if self_ms is not None:
+                warm_internal.append(self_ms)
             time.sleep(0.3)
-            continue  # warmup
-        external.append((ts - t_spawn) * 1000.0)
-        if line2:
-            internal.append(float(line2.split(":")[1]))
+            continue
+        external.append(ext_ms)
+        if self_ms is not None:
+            internal.append(self_ms)
         if kstart is not None:
             spawn_deltas.append((t_spawn - kstart) * 1000.0)
         time.sleep(0.3)
     out = {
-        "external_ms": run_stats(external),
-        "self_ms": run_stats(internal) if internal else None,
+        "external_ms": run_stats(external, ci=True, warmup=warm_external),
+        "self_ms": (run_stats(internal, ci=True, warmup=warm_internal)
+                    if internal else None),
         "clock_note": "external: harness CLOCK_MONOTONIC spawn->marker "
                       "(stdout `first_frame` on first on-screen present, "
                       "same method as the native frameworks); "
@@ -1356,22 +1581,45 @@ def measure_idle_mem_lumen(app, display):
 # Per-cell measurement
 # --------------------------------------------------------------------------
 
+def measure_idle_mem(fw, app, display):
+    """Idle (and, for hello, 5 s) memory over MEM_RUNS separate launches.
+
+    One launch gives a point with no spread; repeating it exposes how much
+    of the footprint is allocator/compositor luck. Returns
+    (idle_point, idle_stats, late_point, late_stats)."""
+    idles, lates = [], []
+    for i in range(MEM_WARMUP_RUNS + MEM_RUNS):
+        if fw == "lumen":
+            idle, late = measure_idle_mem_lumen(app, display)
+        else:
+            idle, late = measure_idle_mem_native(fw, app, display)
+        if i < MEM_WARMUP_RUNS:
+            continue
+        idles.append(idle)
+        if late:
+            lates.append(late)
+        time.sleep(0.3)
+    return (median_mem(idles), mem_stats(idles),
+            median_mem(lates) if lates else None,
+            mem_stats(lates) if lates else None)
+
+
 def measure_cell(fw, app, display, cold=False):
     cell = {}
-    log(f"=== {fw}/{app}: startup x{STARTUP_RUNS} ===")
+    log(f"=== {fw}/{app}: startup x{STARTUP_RUNS} "
+        f"(+{STARTUP_WARMUP_RUNS} warmup) ===")
     if fw == "lumen":
         cell["startup"] = measure_startup_lumen(app, display, cold=cold)
     else:
         cell["startup"] = measure_startup_native(fw, app, display, cold=cold)
 
-    log(f"=== {fw}/{app}: idle memory ===")
-    if fw == "lumen":
-        idle, late = measure_idle_mem_lumen(app, display)
-    else:
-        idle, late = measure_idle_mem_native(fw, app, display)
+    log(f"=== {fw}/{app}: idle memory x{MEM_RUNS} ===")
+    idle, idle_stats, late, late_stats = measure_idle_mem(fw, app, display)
     cell["mem_idle"] = idle
+    cell["mem_idle_stats"] = idle_stats
     if late:
         cell["mem_5s"] = late
+        cell["mem_5s_stats"] = late_stats
 
     workload = {"list": "scroll", "textview": "scroll", "forms": "interact"}.get(app)
     if workload == "scroll":
@@ -1379,27 +1627,31 @@ def measure_cell(fw, app, display, cold=False):
         for p in range(SCROLL_PASSES):
             log(f"=== {fw}/{app}: scroll pass {p + 1}/{SCROLL_PASSES} ===")
             if fw == "lumen":
-                st, post = measure_scroll_pass_lumen(app, display)
+                pass_stats, post = measure_scroll_pass_lumen(app, display)
             else:
-                st, post = measure_pass_native_retry(fw, app, "--scroll-bench", display)
-            passes.append(st)
+                pass_stats, post = measure_pass_native_retry(
+                    fw, app, "--scroll-bench", display)
+            passes.append(pass_stats)
             post_mems.append(post)
             time.sleep(0.5)
         cell["scroll"] = combine_passes(passes)
         cell["mem_post"] = median_mem(post_mems)
+        cell["mem_post_stats"] = mem_stats(post_mems)
     elif workload == "interact":
         passes, post_mems = [], []
         for p in range(INTERACT_PASSES):
             log(f"=== {fw}/{app}: interact pass {p + 1}/{INTERACT_PASSES} ===")
             if fw == "lumen":
-                st, post = measure_interact_pass_lumen(display)
+                pass_stats, post = measure_interact_pass_lumen(display)
             else:
-                st, post = measure_pass_native_retry(fw, app, "--interact", display)
-            passes.append(st)
+                pass_stats, post = measure_pass_native_retry(
+                    fw, app, "--interact", display)
+            passes.append(pass_stats)
             post_mems.append(post)
             time.sleep(0.5)
         cell["interact"] = combine_passes(passes)
         cell["mem_post"] = median_mem(post_mems)
+        cell["mem_post_stats"] = mem_stats(post_mems)
     return cell
 
 
@@ -1408,6 +1660,16 @@ def median_mem(mems):
     for key in ("pss_kb", "rss_kb"):
         vals = [m[key] for m in mems if m.get(key) is not None]
         out[key] = int(statistics.median(vals)) if vals else None
+    return out
+
+
+def mem_stats(mems):
+    """Median, spread, min and samples for each memory series."""
+    out = {}
+    for key in ("pss_kb", "rss_kb"):
+        vals = [m[key] for m in mems if m.get(key) is not None]
+        if vals:
+            out[key] = run_stats(vals)
     return out
 
 
@@ -1428,9 +1690,9 @@ def calibrate(display):
     3. app-clock cross-check: the calib binary also prints its own
        CLOCK_MONOTONIC, letting the harness compare marker arrival time
        against the app-side stamp (pipe+scheduling latency)."""
-    ext, kdelta, pipe_lat = [], [], []
+    ext, kdelta, pipe_lat, warm = [], [], [], []
     calib = BIN_OUT / "calib"
-    for _ in range(30):
+    for i in range(CALIB_WARMUP_RUNS + CALIB_RUNS):
         t_spawn = time.monotonic()
         proc = subprocess.Popen(_taskset_prefix() + [str(calib)],
                                 stdout=subprocess.PIPE, start_new_session=True)
@@ -1443,6 +1705,10 @@ def calibrate(display):
             s.close()
         if ts is None:
             continue
+        if i < CALIB_WARMUP_RUNS:
+            warm.append((ts - t_spawn) * 1000.0)
+            time.sleep(0.05)
+            continue
         ext.append((ts - t_spawn) * 1000.0)
         if kstart is not None:
             kdelta.append((t_spawn - kstart) * 1000.0)
@@ -1451,10 +1717,14 @@ def calibrate(display):
             pipe_lat.append((ts - app_mono) * 1000.0)
         time.sleep(0.05)
     return {
-        "note": "all values ms; medians with IQR over 30 runs",
-        "spawn_to_marker_floor_ms": run_stats(ext),
+        "note": (f"all values ms; median with IQR, MAD, min and a "
+                 f"{CI_CONFIDENCE:.0%} bootstrap interval over "
+                 f"{CALIB_RUNS} runs (+{CALIB_WARMUP_RUNS} warmup)"),
+        "n": len(ext),
+        "warmup_runs": CALIB_WARMUP_RUNS,
+        "spawn_to_marker_floor_ms": run_stats(ext, ci=True, warmup=warm),
         "harness_vs_kernel_spawn_ms": run_stats(kdelta),
-        "marker_pipe_latency_ms": run_stats(pipe_lat),
+        "marker_pipe_latency_ms": run_stats(pipe_lat, ci=True),
         "interpretation": (
             "external startup numbers carry ~floor overhead identically for "
             "every framework; the kernel cross-check bounds the harness "
@@ -1622,12 +1892,12 @@ Known asymmetries, read before quoting numbers:
   (the analogue of those toolkit libs); all four Flutter apps share one
   `libapp.so`, so their size rows are identical. Lumen's size is a generic
   runtime, not an app-specific link.
-* Startup runs are warm-cache (one discarded warmup run per cell; no
-  page-cache eviction between runs). The optional `--cold` mode evicts
-  file-backed pages of the binary + linked libraries + data before each
-  run via posix_fadvise; labeled *partial* cold: anonymous pages,
-  compositor state, and anything another process keeps mapped stay warm.
-  No default results use it.
+* Startup runs are warm-cache: the discarded warmup launches pay the
+  cold-cache cost, and nothing evicts the page cache between recorded
+  launches. The optional `--cold` mode evicts file-backed pages of the
+  binary + linked libraries + data before every launch, warmup included;
+  labeled *partial* cold: anonymous pages, compositor state, and anything
+  another process keeps mapped stay warm. No default results use it.
 * startup(external) includes the harness's spawn overhead identically
   for every framework, quantified in the calibration section.
   startup(self) starts at the first line of main, so external-self =
@@ -1635,33 +1905,123 @@ Known asymmetries, read before quoting numbers:
 """
 
 
+def report_config(results):
+    """Statistics settings behind a report: what the run recorded, or the
+    current defaults when rendering a results.json that predates them."""
+    cfg = results.get("config") or {}
+    return {
+        "confidence": cfg.get("ci_confidence", CI_CONFIDENCE),
+        "resamples": cfg.get("ci_resamples", CI_RESAMPLES),
+        "seed": cfg.get("ci_seed", CI_SEED),
+        "tolerance": cfg.get("agreement_tolerance", AGREEMENT_TOLERANCE),
+        "unstable": cfg.get("unstable_iqr_fraction", UNSTABLE_IQR_FRACTION),
+        "startup_runs": cfg.get("startup_runs"),
+        "startup_warmup": cfg.get("startup_warmup_runs"),
+        "frame_warmup": cfg.get("frame_warmup_frames"),
+        "mem_runs": cfg.get("mem_runs"),
+        "scroll_passes": cfg.get("scroll_passes"),
+        "interact_passes": cfg.get("interact_passes"),
+        "calibration_runs": cfg.get("calibration_runs"),
+        "schema": results.get("schema_version",
+                              cfg.get("schema_version", 1)),
+    }
+
+
+def enrich(summary, rcfg):
+    """A summary with min/MAD/CI filled in from its stored samples.
+
+    Schema-1 results kept every startup sample but no interval, so the
+    same report can be rendered from them."""
+    if not summary:
+        return summary
+    return st.ensure_ci(summary, confidence=rcfg["confidence"],
+                        resamples=rcfg["resamples"], seed=rcfg["seed"])
+
+
+FRAME_CELL_LEGEND = (
+    "Each frame cell reads `median (spread, min)`: the median across "
+    "passes, the gap between the best and worst pass, and the best pass "
+    "itself as the floor.")
+
+
+def ascii_only(v):
+    """Report text is ASCII. Version strings come from other people's
+    tools (`flutter --version` ships a bullet character), so anything
+    outside ASCII is replaced rather than passed through."""
+    if v is None:
+        return "-"
+    return "".join(c if c.isascii() else "-" for c in str(v))
+
+
 def fmt_ms(v, spec=".1f"):
     return f"{format(v, spec)}" if isinstance(v, (int, float)) else "-"
 
 
-def fmt_stat(st, spec=".1f"):
-    """median +/- IQR/2 rendering with instability flag."""
-    if not st or st.get("median") is None:
-        return "-"
-    s = f"{format(st['median'], spec)} +/-{format(st['iqr'] / 2, spec)}"
-    if st.get("unstable"):
+def fmt_flags(summary):
+    """Trailing markers: instability and outlier count."""
+    s = ""
+    if summary.get("unstable"):
         s += " (!)"
-    if st.get("outliers"):
-        s += f" ({len(st['outliers'])}o)"
+    n_out = summary.get("n_outliers")
+    if n_out is None:
+        n_out = len(summary.get("outliers") or [])
+    if n_out:
+        s += f" ({n_out}o)"
     return s
 
 
+def fmt_stat(summary, spec=".1f"):
+    """median +/- IQR/2, with the instability and outlier markers."""
+    if not summary or summary.get("median") is None:
+        return "-"
+    return (f"{format(summary['median'], spec)} "
+            f"+/-{format(summary['iqr'] / 2, spec)}" + fmt_flags(summary))
+
+
+def fmt_median(summary, spec=".1f"):
+    if not summary or summary.get("median") is None:
+        return "-"
+    return format(summary["median"], spec) + fmt_flags(summary)
+
+
+def fmt_spread(summary, spec=".1f"):
+    """IQR with MAD in parentheses: two views of the same spread."""
+    if not summary or summary.get("iqr") is None:
+        return "-"
+    s = format(summary["iqr"], spec)
+    if summary.get("mad") is not None:
+        s += f" ({format(summary['mad'], spec)})"
+    return s
+
+
+def fmt_ci(summary, spec=".1f"):
+    bounds = st.ci_bounds(summary)
+    if bounds is None:
+        return "-"
+    return f"{format(bounds[0], spec)}-{format(bounds[1], spec)}"
+
+
 def fmt_pct(cell_metric, key):
+    """One frame percentile: cross-pass median, then the pass-to-pass
+    spread and the best pass in parentheses."""
     if not cell_metric:
         return "-"
     med = cell_metric.get(key + "_median")
-    spread = cell_metric.get(key + "_spread")
     if med is None:
         return "-"
-    return f"{med:.2f} +/-{(spread or 0) / 2:.2f}"
+    spread = cell_metric.get(key + "_spread") or 0.0
+    lo = cell_metric.get(key + "_min")
+    if lo is None:
+        passes = cell_metric.get("passes") or []
+        vals = [pss[key] for pss in passes if key in pss]
+        lo = min(vals) if vals else None
+    tail = f", min {lo:.2f}" if lo is not None else ""
+    return f"{med:.2f} ({spread:.2f}{tail})"
 
 
-def fmt_mem(mem):
+def fmt_mem(mem, mem_stats_dict=None):
+    """PSS MiB with RSS in parentheses; PSS spread when several launches
+    were sampled."""
     if not mem:
         return "-"
     pss = mem.get("pss_kb")
@@ -1670,7 +2030,11 @@ def fmt_mem(mem):
         return "-"
     p = f"{pss / 1024:.1f}" if pss else "?"
     r = f"{rss / 1024:.1f}" if rss else "?"
-    return f"{p} ({r})"
+    spread = ""
+    pss_stat = (mem_stats_dict or {}).get("pss_kb") or {}
+    if pss_stat.get("iqr") is not None and pss_stat.get("n", 0) > 1:
+        spread = f" +/-{pss_stat['iqr'] / 2 / 1024:.1f}"
+    return f"{p}{spread} ({r})"
 
 
 def size_str(sizes, fw, app):
@@ -1685,27 +2049,50 @@ def size_str(sizes, fw, app):
     return f"{b / 1048576:.1f} MiB" if b else "-"
 
 
-def agreement_rows(results):
+def startup_summary(cell, which="external_ms"):
+    return (cell.get("startup") or {}).get(which) or {}
+
+
+def overlapping_pairs(entries):
+    """Pairs of (name, summary) whose confidence intervals overlap.
+
+    An overlap means the two medians are not separated by the data: the
+    difference between them is inside the run-to-run noise."""
+    pairs = []
+    for i in range(len(entries)):
+        for j in range(i + 1, len(entries)):
+            a_name, a = entries[i]
+            b_name, b = entries[j]
+            if st.intervals_overlap(st.ci_bounds(a), st.ci_bounds(b)):
+                pairs.append((a_name, b_name))
+    return pairs
+
+
+def agreement_rows(results, tolerance=None):
     """Run-1 vs run-2 medians for every headline metric.
 
-    Error bars: startup -> max of the two runs' IQRs; frame
-    percentiles -> max of the two runs' cross-pass spreads (floored at
-    5% of the metric); memory -> max(3%, 1 MiB)."""
+    Agreement is the relative difference of the two medians: the gap
+    between them divided by their average. A metric agrees when that
+    difference is at or below `tolerance`."""
+    if tolerance is None:
+        tolerance = report_config(results)["tolerance"]
     rounds = results.get("rounds", [])
     if len(rounds) < 2:
         return []
     r0, r1 = rounds[0].get("cells", {}), rounds[1].get("cells", {})
     rows = []
 
-    def add(fw, app, metric, m0, m1, bar):
+    def add(fw, app, metric, m0, m1):
         if m0 is None or m1 is None:
             return
-        delta = abs(m1 - m0)
+        diff = st.rel_diff(m0, m1)
         rows.append({
             "fw": fw, "app": app, "metric": metric,
-            "run1": m0, "run2": m1, "delta": round(delta, 3),
-            "error_bar": round(bar, 3),
-            "agree": delta <= bar,
+            "run1": m0, "run2": m1,
+            "abs_delta": round(abs(m1 - m0), 3),
+            "rel_diff": round(diff, 4) if diff is not None else None,
+            "tolerance": tolerance,
+            "agree": diff is None or diff <= tolerance,
         })
 
     for fw in FRAMEWORKS:
@@ -1714,37 +2101,232 @@ def agreement_rows(results):
             c1 = r1.get(fw, {}).get(app)
             if not c0 or not c1:
                 continue
-            s0 = c0.get("startup", {}).get("external_ms", {})
-            s1 = c1.get("startup", {}).get("external_ms", {})
-            if s0.get("median") is not None and s1.get("median") is not None:
-                bar = max(s0.get("iqr", 0), s1.get("iqr", 0),
-                          0.02 * s0["median"])
-                add(fw, app, "startup ext ms", s0["median"], s1["median"], bar)
+            s0 = startup_summary(c0)
+            s1 = startup_summary(c1)
+            add(fw, app, "startup ext ms", s0.get("median"), s1.get("median"))
             for wk in ("scroll", "interact"):
                 w0, w1 = c0.get(wk), c1.get(wk)
                 if not w0 or not w1:
                     continue
                 for key in ("p50_ms", "p95_ms", "p99_ms"):
-                    m0 = w0.get(key + "_median")
-                    m1 = w1.get(key + "_median")
-                    if m0 is None or m1 is None:
-                        continue
-                    bar = max(w0.get(key + "_spread", 0),
-                              w1.get(key + "_spread", 0), 0.05 * m0)
-                    add(fw, app, f"{wk} {key}", m0, m1, bar)
-            p0 = c0.get("mem_idle", {}).get("pss_kb")
-            p1 = c1.get("mem_idle", {}).get("pss_kb")
-            if p0 and p1:
-                bar = max(0.03 * p0, 1024)
-                add(fw, app, "idle PSS kB", p0, p1, bar)
+                    add(fw, app, f"{wk} {key}", w0.get(key + "_median"),
+                        w1.get(key + "_median"))
+            add(fw, app, "idle PSS kB",
+                (c0.get("mem_idle") or {}).get("pss_kb"),
+                (c1.get("mem_idle") or {}).get("pss_kb"))
     return rows
 
 
-def write_report(results):
+def env_block(results):
+    """Compact block of the machine facts that move the numbers."""
+    env = results.get("env", {})
+    cpu = env.get("cpu", {})
+    disp = env.get("display", {})
+    versions = results.get("versions") or env.get("toolchains") or {}
+
+    def cpu_fact(key, flat):
+        return cpu.get(key, env.get(flat))
+
+    app_cpus = cpu_fact("app_cpus", "app_cpus")
+    govs = cpu.get("app_cpu_governors") or env.get("governors") or []
+    backend = disp.get("backend") or results.get("display_backend", "?")
+    disp_cmd = disp.get("command")
+    if not disp_cmd and backend == "weston":
+        disp_cmd = ("weston --backend=headless --renderer=gl "
+                    "--socket=wayland-bench --width=1280 --height=1024")
+    refresh = disp.get("refresh_hz")
+
+    pin_note = cpu.get("pin_note") or env.get("cpu_pin_note")
+    boost = cpu.get("cpufreq_boost") or env.get("cpufreq_boost")
+    rows = [
+        ("host / kernel", f"{env.get('hostname', '?')} / "
+                          f"{env.get('kernel', '?')}"),
+        ("CPU", f"{cpu_fact('model', 'cpu_model') or '?'} "
+                f"({cpu_fact('count', 'cpu_count') or '?'} logical cpus)"),
+        ("app cpus", f"{app_cpus}" + (f" ({pin_note})" if pin_note else "")),
+        ("cpu governor", f"{'/'.join(govs) if govs else '?'} on the app cpus; "
+                         f"pin attempt: {results.get('governor_note', '?')}"
+                         + (f"; boost: {boost}" if boost else "")),
+        ("memory", env.get("mem", {}).get("MemTotal", "?")),
+        ("display", f"{backend}, nested headless"
+                    + (f", {disp.get('size')}" if disp.get("size") else "")
+                    + (f", {refresh} Hz nominal" if refresh else "")),
+        ("display command", f"`{disp_cmd}`" if disp_cmd else "-"),
+        ("GPU stack", env.get("mesa", "?")),
+        ("load at start", env.get("loadavg_start", "?")),
+        ("rustc / python", f"{env.get('rustc', '?')} / "
+                           f"python {env.get('python', '?')}"),
+    ]
+    if cpu.get("scaling_driver"):
+        rows.insert(4, ("cpufreq driver", cpu["scaling_driver"]))
+    lumen_git = env.get("lumen_git") or {}
+    if lumen_git.get("sha"):
+        rows.append(("lumen checkout", (lumen_git["sha"][:12]
+                     + (" (dirty)" if lumen_git.get("dirty") else ""))))
+
+    L = ["## Environment", "",
+         "Machine facts that move the numbers. A result is only comparable "
+         "with another run on the same block.", "",
+         "| item | value |", "|---|---|"]
+    for k, v in rows:
+        L.append(f"| {k} | {ascii_only(v)} |")
+    L.append("")
+    if versions:
+        L.append("Toolkit version per framework: "
+                 + "; ".join(f"{k} {ascii_only(v)}"
+                             for k, v in versions.items()) + ".")
+        L.append("")
+    return L
+
+
+def methodology_block(results):
+    """Plain-language guide to every column and term in this report."""
+    rcfg = report_config(results)
+    cfg = results.get("config") or {}
+    n_start = rcfg["startup_runs"]
+    L = ["## How to read these tables", ""]
+    L.append(
+        "Every number is a **median**: the middle value of the repeated "
+        "measurements, so one slow launch cannot drag it around. Next to it "
+        "is a **spread**, showing how much the repeats disagreed. Small "
+        "spread means the number is solid; large spread means the machine, "
+        "not the framework, is doing the talking.")
+    L.append("")
+    L.append("Terms used in the columns:")
+    L.append("")
+    L.append("* **median**: the middle measurement. Half were faster, half "
+             "slower.")
+    L.append("* **IQR** (interquartile range): the width of the middle half "
+             "of the measurements. A spread that ignores the extremes.")
+    L.append("* **MAD** (median absolute deviation): the typical distance "
+             "of a measurement from the median. A second spread, even less "
+             "sensitive to extremes than the IQR. Shown in parentheses "
+             "after the IQR.")
+    L.append("* **min**: the fastest measurement seen. Treated as the noise "
+             "floor: work cannot go faster than itself, so anything above "
+             "min is interference or variance.")
+    L.append(f"* **{int(rcfg['confidence'] * 100)}% CI** (confidence "
+             "interval) on startup: the range where the median would "
+             "plausibly land if the same cell were measured again. It is "
+             "computed by resampling the recorded launches "
+             f"({rcfg['resamples']} times, a percentile bootstrap). **If two "
+             "frameworks' intervals overlap, the data does not separate "
+             "them**; do not read the gap between their medians as real. "
+             "Overlapping pairs are listed under the startup table.")
+    L.append("* **(!)**: unstable cell, meaning IQR divided by median is "
+             f"above {rcfg['unstable']:.0%}. Treat that number as "
+             "indicative, not precise.")
+    L.append("* **(2o)**: two measurements fell outside the outlier fences "
+             "and were kept in the sample. See the outlier policy below.")
+    L.append("* **frame percentile columns** (p50/p95/p99): p50 is the "
+             "typical frame interval, p95 and p99 are the slow tail; a "
+             "16.7 ms p50 with a 40 ms p99 means smooth scrolling with "
+             "visible hitches. " + FRAME_CELL_LEGEND)
+    L.append("* **`+/-`**: half the IQR, the form used where a table has "
+             "no room for its own spread column (the startup column of the "
+             "forms/list/textview tables, and the calibration figures).")
+    L.append("* **memory columns**: PSS (proportional set size, the "
+             "process's share of physical memory, counting shared pages "
+             "only in proportion) in MiB, with RSS (resident set size, all "
+             "resident pages) in parentheses. `+/-` on PSS is half the IQR "
+             "across the repeated launches.")
+    L.append("")
+    counts = []
+    if n_start:
+        counts.append(f"startup: {n_start} launches per cell"
+                      + (f" (+{rcfg['startup_warmup']} warmup)"
+                         if rcfg["startup_warmup"] else ""))
+    if rcfg["scroll_passes"]:
+        counts.append(f"scroll: {rcfg['scroll_passes']} passes x "
+                      f"{cfg.get('scroll_seconds', '?')} s")
+    if rcfg["interact_passes"]:
+        counts.append(f"interact: {rcfg['interact_passes']} passes x "
+                      f"{cfg.get('interact_cycles', '?')} cycles")
+    if rcfg["mem_runs"]:
+        counts.append(f"idle memory: {rcfg['mem_runs']} launches per cell")
+    if rcfg["calibration_runs"]:
+        counts.append(f"calibration: {rcfg['calibration_runs']} launches")
+    if counts:
+        L.append("**Sample counts.** " + "; ".join(counts)
+                 + ". Every count is an environment knob (see README.md) and "
+                   "is recorded in `results.json` next to the numbers it "
+                   "produced, together with each metric's raw per-iteration "
+                   "samples, so any other statistic can be recomputed "
+                   "without measuring again.")
+        L.append("")
+    L.append("**Warmup.** Measurements thrown away before recording starts, "
+             "and why:")
+    L.append("")
+    L.append(WARMUP_POLICY)
+    L.append("")
+    L.append("**Outliers.** " + OUTLIER_POLICY.replace("\n", " "))
+    L.append("")
+    if rcfg["schema"] < SCHEMA_VERSION:
+        L.append(f"This report renders a schema-{rcfg['schema']} "
+                 f"`results.json` (the current harness writes schema "
+                 f"{SCHEMA_VERSION}). That run recorded every startup "
+                 "sample but no interval, minimum or MAD, so those are "
+                 "recomputed here from the stored samples. Columns the run "
+                 "never recorded, such as per-frame samples, read `-`.")
+        L.append("")
+    return L
+
+
+def startup_block(results, rcfg, cells):
+    """Startup detail: median, spread, floor, interval, and which pairs of
+    frameworks the data does not separate."""
+    L = ["## Startup detail (external, ms)", "",
+         "External startup is process spawn to the first presented frame, "
+         "measured identically for all eight frameworks. This is the one "
+         "metric where the report carries confidence intervals, because it "
+         "is the one most often quoted as a single number.", ""]
+    for app in APPS:
+        entries = []
+        for fw in FRAMEWORKS:
+            s = enrich(startup_summary(cells.get(fw, {}).get(app, {})), rcfg)
+            if s and s.get("median") is not None:
+                entries.append((fw, s))
+        if not entries:
+            continue
+        entries.sort(key=lambda e: e[1]["median"])
+        L.append(f"### {app}")
+        L.append("")
+        L.append(f"| framework | median ms | IQR (MAD) | min | "
+                 f"{int(rcfg['confidence'] * 100)}% CI | outliers | n |")
+        L.append("|---|---|---|---|---|---|---|")
+        for fw, s in entries:
+            n_out = s.get("n_outliers", len(s.get("outliers") or []))
+            L.append(f"| {fw} | {fmt_median(s)} | {fmt_spread(s)} "
+                     f"| {fmt_ms(s.get('min'))} | {fmt_ci(s)} "
+                     f"| {n_out} | {s.get('n', '-')} |")
+        L.append("")
+        pairs = overlapping_pairs(entries)
+        if pairs:
+            L.append("Intervals overlap for "
+                     + ", ".join(f"{a}/{b}" for a, b in pairs)
+                     + ". The data does not separate those pairs; read them "
+                       "as the same startup time.")
+        elif any(st.ci_bounds(s) for _, s in entries):
+            L.append("No intervals overlap: every framework's startup time "
+                     "is separated from the others by more than the "
+                     "measurement noise.")
+        L.append("")
+    return L
+
+
+def write_results_json(results):
     RESULTS_JSON.write_text(json.dumps(results, indent=2) + "\n")
+    log(f"wrote {RESULTS_JSON}")
+
+
+def write_report(results, write_json=True):
+    """Render results.md (and, unless told otherwise, results.json)."""
+    if write_json:
+        write_results_json(results)
+    rcfg = report_config(results)
     env = results.get("env", {})
     sizes = results.get("sizes", {})
-    versions = results.get("versions", {})
+    versions = results.get("versions", {}) or env.get("toolchains", {})
     rounds = results.get("rounds", [])
     cells = rounds[0].get("cells", {}) if rounds else {}
 
@@ -1752,32 +2334,17 @@ def write_report(results):
     L.append("# Cross-framework benchmark results")
     L.append("")
     L.append(f"Generated: {results.get('generated', '?')}  ")
-    L.append(f"Host: {env.get('hostname', '?')} | kernel {env.get('kernel', '?')} | "
-             f"{env.get('cpu_model', '?')} ({env.get('cpu_count', '?')} cpus)  ")
-    L.append(f"Governors: {'/'.join(env.get('governors', []))} | "
-             f"governor pin: {results.get('governor_note', '?')} | "
-             f"app cpus {env.get('app_cpus')}  ")
-    _disp = results.get('display_backend', '?')
-    _disp_note = f"{_disp} --renderer=gl (nested headless)" if _disp == "weston" \
-        else f"{_disp} (nested headless)"
-    L.append(f"Mesa: {env.get('mesa', '?')} | display: {_disp_note} | "
-             f"all eight windowed | "
-             f"Lumen: {env.get('lumen_git', {}).get('sha', '?')[:12]}"
-             f"{' (dirty)' if env.get('lumen_git', {}).get('dirty') else ''}")
+    L.append(f"Host: {env.get('hostname', '?')} | "
+             f"{env.get('cpu_model', '?')} | "
+             f"display: {results.get('display_backend', '?')} "
+             f"(nested headless) | schema {rcfg['schema']}")
     L.append("")
-    L.append("The suite runs the whole matrix twice; each full pass is a run. "
-             "The tables below report run 1. The run-to-run agreement table near "
-             "the end checks that a second identical run (run 2) lands within the "
-             "stated error bars. Values are medians; +/- is half the IQR "
-             "(interquartile range) for startup (n=15) or half the cross-pass "
-             "spread for frame percentiles (3 passes). (!) marks an unstable cell "
-             f"(IQR/median > {UNSTABLE_IQR_FRACTION:.0%}). (No) means N Tukey-fence "
-             "outliers were kept in the sample, e.g. (2o) = 2 outliers. Memory is "
-             "PSS (proportional set size) in MiB with RSS (resident set size) in "
-             "parentheses, both from /proc, idle = first frame + 2 s. In the binary "
-             "column, Lumen is shown as `<n> MiB rt +<n> KiB app`: rt is the shared "
-             "lumenc runtime, app is the compiled app payload; every other framework "
-             "shows a single stripped binary size.")
+    n_rounds = len(rounds)
+    L.append(f"The whole matrix is measured {'twice' if n_rounds > 1 else 'once'}; "
+             "each full pass over it is a run. The tables below report run 1."
+             + (" The run-to-run agreement section near the end compares run 1 "
+                "with run 2 metric by metric and names anything that moved "
+                "more than the stated threshold." if n_rounds > 1 else ""))
     L.append("")
     L.append("Startup is measured the same way across all eight frameworks: "
              "external = harness CLOCK_MONOTONIC spawn -> first `first_frame` "
@@ -1786,9 +2353,11 @@ def write_report(results):
              "whose windowed backend emits both markers under "
              "`LUMEN_BOOT_TRACE`; there is no MCP (the harness control channel "
              "to Lumen) connect/poll in the startup path (MCP drives only the "
-             "scroll/interact passes). See "
-             "the clock-sources table and caveats below.")
+             "scroll/interact passes). See the clock-sources table and caveats "
+             "below.")
     L.append("")
+    L.extend(env_block(results))
+    L.extend(methodology_block(results))
 
     def cell(fw, app):
         return cells.get(fw, {}).get(app, {})
@@ -1797,17 +2366,20 @@ def write_report(results):
     L.append("## hello - startup floor, baseline memory, binary size")
     L.append("")
     L.append("| framework | version | binary (stripped) | startup ext ms | "
-             "startup self ms | PSS idle MiB (RSS) | PSS @5 s |")
-    L.append("|---|---|---|---|---|---|---|")
+             "ext IQR (MAD) | ext min | startup self ms | PSS idle MiB (RSS) "
+             "| PSS @5 s |")
+    L.append("|---|---|---|---|---|---|---|---|---|")
     for fw in FRAMEWORKS:
         c = cell(fw, "hello")
-        st = c.get("startup", {})
+        ext = enrich(startup_summary(c), rcfg)
+        selfms = enrich(startup_summary(c, "self_ms"), rcfg)
         L.append(
-            f"| {fw} | {versions.get(fw, '-')} | {size_str(sizes, fw, 'hello')} "
-            f"| {fmt_stat(st.get('external_ms'))} "
-            f"| {fmt_stat(st.get('self_ms'))} "
-            f"| {fmt_mem(c.get('mem_idle'))} "
-            f"| {fmt_mem(c.get('mem_5s'))} |")
+            f"| {fw} | {ascii_only(versions.get(fw))} "
+            f"| {size_str(sizes, fw, 'hello')} "
+            f"| {fmt_median(ext)} | {fmt_spread(ext)} "
+            f"| {fmt_ms(ext.get('min'))} | {fmt_median(selfms)} "
+            f"| {fmt_mem(c.get('mem_idle'), c.get('mem_idle_stats'))} "
+            f"| {fmt_mem(c.get('mem_5s'), c.get('mem_5s_stats'))} |")
     L.append("")
 
     # forms ---------------------------------------------------------------
@@ -1815,21 +2387,22 @@ def write_report(results):
     L.append("")
     L.append("Interact pass = 4 cycles x (40-step focus walk + 20-step "
              "toggle-all), one step per 16 ms; frame-interval percentiles "
-             "over the pass.")
+             "over the pass. " + FRAME_CELL_LEGEND)
     L.append("")
     L.append("| framework | binary | startup ext ms | interact p50 ms | "
              "interact p95 ms | interact p99 ms | PSS idle (RSS) | PSS post |")
     L.append("|---|---|---|---|---|---|---|---|")
     for fw in FRAMEWORKS:
         c = cell(fw, "forms")
-        st = c.get("startup", {})
+        ext = enrich(startup_summary(c), rcfg)
         w = c.get("interact")
         L.append(
             f"| {fw} | {size_str(sizes, fw, 'forms')} "
-            f"| {fmt_stat(st.get('external_ms'))} "
+            f"| {fmt_stat(ext)} "
             f"| {fmt_pct(w, 'p50_ms')} | {fmt_pct(w, 'p95_ms')} "
             f"| {fmt_pct(w, 'p99_ms')} "
-            f"| {fmt_mem(c.get('mem_idle'))} | {fmt_mem(c.get('mem_post'))} |")
+            f"| {fmt_mem(c.get('mem_idle'), c.get('mem_idle_stats'))} "
+            f"| {fmt_mem(c.get('mem_post'), c.get('mem_post_stats'))} |")
     L.append("")
 
     # list / textview -----------------------------------------------------
@@ -1839,65 +2412,105 @@ def write_report(results):
     ):
         L.append(f"## {app} - {blurb}")
         L.append("")
+        L.append(FRAME_CELL_LEGEND)
+        L.append("")
         L.append("| framework | binary | startup ext ms | scroll p50 ms | "
                  "scroll p95 ms | scroll p99 ms | PSS idle (RSS) | PSS post |")
         L.append("|---|---|---|---|---|---|---|---|")
         for fw in FRAMEWORKS:
             c = cell(fw, app)
-            st = c.get("startup", {})
+            ext = enrich(startup_summary(c), rcfg)
             w = c.get("scroll")
             L.append(
                 f"| {fw} | {size_str(sizes, fw, app)} "
-                f"| {fmt_stat(st.get('external_ms'))} "
+                f"| {fmt_stat(ext)} "
                 f"| {fmt_pct(w, 'p50_ms')} | {fmt_pct(w, 'p95_ms')} "
                 f"| {fmt_pct(w, 'p99_ms')} "
-                f"| {fmt_mem(c.get('mem_idle'))} | {fmt_mem(c.get('mem_post'))} |")
+                f"| {fmt_mem(c.get('mem_idle'), c.get('mem_idle_stats'))} "
+                f"| {fmt_mem(c.get('mem_post'), c.get('mem_post_stats'))} |")
         L.append("")
+
+    L.extend(startup_block(results, rcfg, cells))
 
     # calibration ---------------------------------------------------------
     cal = results.get("calibration")
     if cal:
         L.append("## Calibration - bounding systematic error")
         L.append("")
-        f = cal.get("spawn_to_marker_floor_ms", {})
+        f = enrich(cal.get("spawn_to_marker_floor_ms", {}), rcfg)
         k = cal.get("harness_vs_kernel_spawn_ms", {})
-        p = cal.get("marker_pipe_latency_ms", {})
-        L.append(f"* spawn->marker floor (trivial C binary, n=30): "
-                 f"**{fmt_stat(f, '.2f')} ms**; harness+fork/exec overhead "
+        p = enrich(cal.get("marker_pipe_latency_ms", {}), rcfg)
+        n_cal = f.get("n", rcfg["calibration_runs"] or "?")
+        L.append("Each line is median ms, then half the IQR as the spread, "
+                 "the minimum, and the confidence interval where one is "
+                 "available.")
+        L.append("")
+        L.append(f"* spawn->marker floor (trivial C binary, n={n_cal}): "
+                 f"**{fmt_median(f, '.2f')} ms** "
+                 f"+/-{fmt_ms((f.get('iqr') or 0) / 2, '.2f')}, "
+                 f"min {fmt_ms(f.get('min'), '.2f')}, "
+                 f"CI {fmt_ci(f, '.2f')}. Harness plus fork/exec overhead, "
                  "baked identically into every external startup number.")
         L.append(f"* harness-vs-kernel spawn timestamp (independent, "
-                 f"/proc starttime): **{fmt_stat(k, '.2f')} ms**; bounds the "
+                 f"/proc starttime): **{fmt_median(k, '.2f')} ms** "
+                 f"+/-{fmt_ms((k.get('iqr') or 0) / 2, '.2f')}. Bounds the "
                  "harness's spawn-anchor error.")
         L.append(f"* marker pipe latency (app clock vs harness clock): "
-                 f"**{fmt_stat(p, '.2f')} ms**; bounds marker-arrival skew.")
+                 f"**{fmt_median(p, '.2f')} ms** "
+                 f"+/-{fmt_ms((p.get('iqr') or 0) / 2, '.2f')}, "
+                 f"CI {fmt_ci(p, '.2f')}. Bounds marker-arrival skew.")
         L.append("* Consequence: cross-framework startup deltas below "
                  "~1 ms are inside the systematic error band and not "
-                 "meaningful.")
+                 "meaningful, whatever the medians say.")
         L.append("")
 
     # agreement -----------------------------------------------------------
-    rows = agreement_rows(results)
+    rows = agreement_rows(results, rcfg["tolerance"])
     if rows:
-        n_ok = sum(1 for r in rows if r["agree"])
+        tol = rcfg["tolerance"]
+        bad = [r for r in rows if not r["agree"]]
+        n_ok = len(rows) - len(bad)
         L.append("## Run-to-run agreement (run 1 vs run 2)")
         L.append("")
-        L.append(f"{n_ok}/{len(rows)} headline medians agree within their "
-                 "stated error bars (startup: IQR; frame percentiles: "
-                 "cross-pass spread, floored at 5%; idle PSS: max(3%, 1 MiB)).")
+        L.append(f"The same matrix was measured twice. For each headline "
+                 f"number, agreement is the **relative difference** of the "
+                 f"two runs' medians: the gap between them divided by their "
+                 f"average. A metric agrees when that difference is at or "
+                 f"below **{tol:.0%}**. A metric that disagrees is not "
+                 f"necessarily wrong, but its single-run number should not "
+                 f"be quoted to better than the difference shown.")
         L.append("")
+        L.append(f"{n_ok}/{len(rows)} metrics agree within {tol:.0%}.")
+        L.append("")
+        if bad:
+            worst = sorted(bad, key=lambda r: -(r["rel_diff"] or 0))
+            shown = worst[:15]
+            L.append(f"Over threshold ({len(bad)}), largest first"
+                     + (f" (top {len(shown)}; the rest are in the table "
+                        "below)" if len(worst) > len(shown) else "") + ":")
+            L.append("")
+            for r in shown:
+                L.append(f"* **{r['fw']}/{r['app']} {r['metric']}**: "
+                         f"{r['run1']} vs {r['run2']} "
+                         f"({r['rel_diff']:.1%} apart)")
+            L.append("")
+        else:
+            L.append("Nothing exceeds the threshold.")
+            L.append("")
         L.append("| framework | app | metric | run 1 | run 2 | abs delta | "
-                 "error bar | agree |")
+                 "rel diff | within threshold |")
         L.append("|---|---|---|---|---|---|---|---|")
         for r in rows:
+            rel = f"{r['rel_diff']:.1%}" if r["rel_diff"] is not None else "-"
             L.append(f"| {r['fw']} | {r['app']} | {r['metric']} "
-                     f"| {r['run1']} | {r['run2']} | {r['delta']} "
-                     f"| {r['error_bar']} | {'yes' if r['agree'] else 'no'} |")
+                     f"| {r['run1']} | {r['run2']} | {r['abs_delta']} "
+                     f"| {rel} | {'yes' if r['agree'] else 'no'} |")
         L.append("")
 
     L.append(CLOCK_TABLE)
     L.append(CAVEATS)
     RESULTS_MD.write_text("\n".join(L) + "\n")
-    log(f"wrote {RESULTS_MD} and {RESULTS_JSON}")
+    log(f"wrote {RESULTS_MD}")
 
 
 # --------------------------------------------------------------------------
@@ -1979,13 +2592,12 @@ def main():
         pass
 
     results = load_results()
-    results["generated"] = time.strftime("%Y-%m-%d %H:%M:%S %z")
-    results["config"] = {
-        "startup_runs": STARTUP_RUNS, "scroll_passes": SCROLL_PASSES,
-        "scroll_seconds": SCROLL_SECONDS, "interact_passes": INTERACT_PASSES,
-        "interact_cycles": INTERACT_CYCLES,
-        "lumen_tick_sample_ms": LUMEN_TICK_SAMPLE_S * 1000,
-    }
+    if cmd != "report":
+        # `report` re-renders an existing results.json and must not stamp
+        # this invocation's settings onto someone else's data.
+        results["generated"] = time.strftime("%Y-%m-%d %H:%M:%S %z")
+        results["schema_version"] = SCHEMA_VERSION
+        results["config"] = config_block()
 
     if cmd in ("build", "all"):
         sizes, versions = build_all()
@@ -1999,6 +2611,7 @@ def main():
         display = Display()
         display.start()
         results["display_backend"] = display.backend
+        results["env"]["display"] = display.describe()
         try:
             if cmd in ("calibrate", "all", "validate"):
                 log("=== calibration ===")
@@ -2016,7 +2629,9 @@ def main():
         write_report(results)
 
     if cmd == "report":
-        write_report(results)
+        # Render only: results.json is the input here, and a re-render must
+        # never rewrite recorded data.
+        write_report(results, write_json=False)
 
     if cmd not in ("build", "calibrate", "measure", "all", "validate", "report"):
         print(__doc__)

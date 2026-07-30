@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Cross-framework benchmark runner.
 #
-#   ./run.sh build                  build all six frameworks x four apps
+#   ./run.sh build                  build all eight frameworks x four apps
 #   ./run.sh all                    build + calibrate + one full matrix round
 #   ./run.sh measure <fw> <app>     one cell (e.g. ./run.sh measure lumen forms)
 #   ./run.sh validate               calibrate + two full rounds + agreement table
-#   ./run.sh report                 rewrite results.md from results.json
+#   ./run.sh report                 re-render results.md from results.json
+#
+# Sample counts, statistics thresholds and output paths are environment
+# variables; see the Configuration section of README.md.
 #
 # All cargo builds (including the Lumen framework's lumenc) use a separate
 # target dir so a shared Lumen target is never touched.
