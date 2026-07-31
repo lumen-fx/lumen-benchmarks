@@ -1,0 +1,66 @@
+name: bug report
+description: a benchmark app fails to build, or a number does not look right
+labels: [bug]
+body:
+  - type: input
+    id: frameworks
+    attributes:
+      label: frameworks affected
+      placeholder: lumen, qt-widgets
+    validations:
+      required: true
+
+  - type: dropdown
+    id: app
+    attributes:
+      label: app
+      options:
+        - hello
+        - forms
+        - list
+        - textview
+        - harness itself
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: kind of problem
+      options:
+        - build failure
+        - implausible number
+        - harness error or hang
+        - report or chart output
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: what looks wrong
+      description: >
+        for a build failure, the failing command and its output; for a number,
+        the value you got, the value you expected, and how many rounds you ran
+    validations:
+      required: true
+
+  - type: textarea
+    id: machine
+    attributes:
+      label: machine
+      description: cpu, gpu, ram, os, compositor, and whether the run was headless
+      placeholder: |
+        cpu: Ryzen 7 7800X3D
+        gpu: RX 7800 XT, Mesa 25.0
+        os: Arch Linux
+        compositor: weston headless (started by run.sh)
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: env knobs
+      description: any BENCH_* variables you set, and the run.sh command you used
+      render: shell

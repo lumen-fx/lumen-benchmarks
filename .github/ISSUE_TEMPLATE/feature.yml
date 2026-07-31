@@ -1,0 +1,27 @@
+name: feature request
+description: propose a new framework, app, metric, or harness change
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: problem
+      description: what the suite does not measure, or measures unfairly
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: proposed behavior
+      description: >
+        what to add or change, and how it keeps the comparison like for like
+        across frameworks
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: alternatives
+      description: other ways to get the same answer, and why they fall short
