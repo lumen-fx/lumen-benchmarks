@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cross-framework benchmark runner.
 #
-#   ./run.sh build                  build all eight frameworks x four apps
+#   ./run.sh build                  build all nine frameworks x four apps
 #   ./run.sh all                    build + calibrate + one full matrix round
 #   ./run.sh measure <fw> <app>     one cell (e.g. ./run.sh measure lumen forms)
 #   ./run.sh validate               calibrate + two full rounds + agreement table

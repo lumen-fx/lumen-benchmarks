@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Cross-framework GUI benchmark harness.
 
-Four apps (hello / list / forms / textview), each implemented in eight
-frameworks (Lumen, Slint, egui, iced, Qt6 Widgets, GTK4 C, Flutter,
-Tauri), measured the same way:
+Four apps (hello / list / forms / textview), each implemented in nine
+frameworks (Lumen, Slint, egui, iced, Qt6 Widgets, Qt6 Quick, GTK4 C,
+Flutter, Tauri), measured the same way:
 
   * startup: process spawn -> first presented frame, repeated
     BENCH_STARTUP_RUNS times (default 20) after BENCH_STARTUP_WARMUP
@@ -28,7 +28,7 @@ README.md. Outlier and warmup policy are stated once, in OUTLIER_POLICY
 and WARMUP_POLICY, and printed into results.md from there. The
 statistics themselves live in stats.py, with tests in test_stats.py.
 
-All eight frameworks run windowed under the same nested headless
+All nine frameworks run windowed under the same nested headless
 compositor (weston --backend=headless --renderer=gl, fallback Xvfb);
 nothing appears on the desktop. Lumen runs `lumenc run` windowed (real
 winit window + wgpu AutoVsync present through weston, like the other
@@ -301,6 +301,7 @@ def fw_bin(fw, app):
         "egui": Path(CARGO_TARGET) / "release" / f"bench-egui-{app}",
         "iced": Path(CARGO_TARGET) / "release" / f"bench-iced-{app}",
         "qt-widgets": ROOT / "qt-widgets" / "build" / f"bench_qt_{app}",
+        "qt-quick": ROOT / "qt-quick" / "build" / f"bench_qtquick_{app}",
         "gtk4": ROOT / "gtk4" / "build" / f"bench_gtk4_{app}",
         # One built binary per framework; per-app hardlinks let the app
         # pick its variant from its own basename (mode still comes from the
@@ -311,8 +312,8 @@ def fw_bin(fw, app):
     return rel[fw]
 
 
-FRAMEWORKS = ("lumen", "slint", "egui", "iced", "qt-widgets", "gtk4",
-              "flutter", "tauri")
+FRAMEWORKS = ("lumen", "slint", "egui", "iced", "qt-widgets", "qt-quick",
+              "gtk4", "flutter", "tauri")
 
 
 def lumen_available():
@@ -442,6 +443,7 @@ def capture_env():
         "host_compositor": os.environ.get("XDG_CURRENT_DESKTOP"),
         "weston": (_cmd_out(["weston", "--version"]) or "").splitlines()[:1],
         "qt": _cmd_out(["pkg-config", "--modversion", "Qt6Widgets"]),
+        "qt_quick": _cmd_out(["pkg-config", "--modversion", "Qt6Quick"]),
         "gtk4": _cmd_out(["pkg-config", "--modversion", "gtk4"]),
         "webkit2gtk": _cmd_out(["pkg-config", "--modversion", "webkit2gtk-4.1"]),
         "flutter": ((_cmd_out(["flutter", "--version"]) or "").splitlines()
@@ -531,7 +533,8 @@ def toolkit_versions():
         v = _lock_version(ROOT / name / "Cargo.lock", pkg)
         if v:
             versions[name] = f"{pkg} {v}"
-    for name, pkg in (("qt-widgets", "Qt6Widgets"), ("gtk4", "gtk4")):
+    for name, pkg in (("qt-widgets", "Qt6Widgets"), ("qt-quick", "Qt6Quick"),
+                      ("gtk4", "gtk4")):
         v = _cmd_out(["pkg-config", "--modversion", pkg])
         if v:
             versions[name] = f"{pkg} {v}"
@@ -640,7 +643,7 @@ def build_all():
                      "-DCMAKE_BUILD_TYPE=Release"])
         run_checked(["cmake", "--build", str(d / "build"), "-j",
                      str(os.cpu_count() or 4)])
-    for name in ("qt-widgets", "gtk4"):
+    for name in ("qt-widgets", "qt-quick", "gtk4"):
         stage(name, lambda name=name: _build_cmake(name))
 
     def _build_flutter():
@@ -1748,6 +1751,7 @@ CLOCK_TABLE = """\
 | egui | end of first `App::update` pass | top of every update pass | `std::time::Instant` (CLOCK_MONOTONIC) |
 | iced | first `window::frames()` delivery | `window::frames()` deliveries | `std::time::Instant` (CLOCK_MONOTONIC) |
 | qt-widgets | first `paintEvent` on the top-level widget | list/textview: viewport Paint events; forms: `UpdateRequest` on the QWindow (one per backing-store sync) | `std::chrono::steady_clock` (CLOCK_MONOTONIC) |
+| qt-quick | `QQuickWindow::frameSwapped` (scene graph's first buffer swap) | `QQuickWindow::frameSwapped`, every presented frame | `std::chrono::steady_clock` (CLOCK_MONOTONIC) |
 | gtk4 | GdkFrameClock `after-paint` | GdkFrameClock `after-paint` | `g_get_monotonic_time` (CLOCK_MONOTONIC) |
 | flutter | first `addPostFrameCallback` (engine presented frame 1) | one `SchedulerBinding` persistent frame callback per rendered frame | Dart `Stopwatch` (CLOCK_MONOTONIC) |
 | tauri | first `requestAnimationFrame` after initial DOM paint | `performance.now()` per `requestAnimationFrame` in the webview | startup: Rust `Instant`; frame deltas: JS `performance.now()` (1 ms-clamped) |
@@ -1839,6 +1843,20 @@ Known asymmetries, read before quoting numbers:
   (arrow keys move within a group), so its 40-step focus walk cycles
   the chain more often. No switch widget (QCheckBox stands in).
   textview uses read-only QTextEdit (lazy document layout).
+* **Qt Quick** builds a scene graph and renders it through the RHI with its
+  own glyph atlas and batched geometry, unlike qt-widgets' QStyle-drawn
+  raster path; it is the like-for-like own-renderer peer for Lumen,
+  Flutter and the other own-renderer entrants, where qt-widgets sets the
+  native-toolkit floor instead. Controls come from QtQuick.Controls'
+  Basic style, so nothing here defers to a native style. It has a real
+  Switch (Qt Widgets has none; QCheckBox stands in there). `frameSwapped`
+  fires once per presented frame regardless of backend, so unlike
+  qt-widgets it needs no per-label paint-event workaround for interact's
+  frame timestamps. list is a `ListView` bound to a `QAbstractListModel`
+  (virtualized, same row data as qt-widgets' model). textview is a
+  `TextArea` (same QTextDocument-backed lazy layout as QTextEdit, no
+  virtualization) hosted in a plain `Flickable` so its `contentY` can be
+  driven directly.
 * **Slint** frame timestamps are `AfterRendering` (submitted, not
   presented); scroll/step driving uses 8/4 ms timers rather than a
   per-frame callback. std-widgets has no RadioButton: radio groups are
@@ -1885,8 +1903,9 @@ Known asymmetries, read before quoting numbers:
   pages shared with other WebKit users on the box, which no native
   framework here shares.
 * Binary sizes are not comparable across linkage models: the Rust apps
-  statically link their framework; **Qt**, **GTK4** and **Tauri** sizes
-  exclude the dynamically linked toolkit/engine libraries
+  statically link their framework; **Qt Widgets**, **Qt Quick**, **GTK4**
+  and **Tauri** sizes exclude the dynamically linked toolkit/engine
+  libraries
   (libQt6*/libgtk-4/libwebkit2gtk). **Flutter**'s size is runner ELF +
   the shared AOT `libapp.so`, excluding the ~17 MiB `libflutter` engine
   (the analogue of those toolkit libs); all four Flutter apps share one
@@ -2277,7 +2296,7 @@ def startup_block(results, rcfg, cells):
     frameworks the data does not separate."""
     L = ["## Startup detail (external, ms)", "",
          "External startup is process spawn to the first presented frame, "
-         "measured identically for all eight frameworks. This is the one "
+         "measured identically for all nine frameworks. This is the one "
          "metric where the report carries confidence intervals, because it "
          "is the one most often quoted as a single number.", ""]
     for app in APPS:
@@ -2346,7 +2365,7 @@ def write_report(results, write_json=True):
                 "with run 2 metric by metric and names anything that moved "
                 "more than the stated threshold." if n_rounds > 1 else ""))
     L.append("")
-    L.append("Startup is measured the same way across all eight frameworks: "
+    L.append("Startup is measured the same way across all nine frameworks: "
              "external = harness CLOCK_MONOTONIC spawn -> first `first_frame` "
              "stdout marker; self = the app's own CLOCK_MONOTONIC "
              "exec/main -> first-frame (`startup_ms:`). This includes Lumen, "
