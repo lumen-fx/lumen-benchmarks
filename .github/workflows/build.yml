@@ -75,6 +75,8 @@ jobs:
             dir: tauri/src-tauri
           - framework: qt-widgets
             kind: cmake-qt
+          - framework: qt-quick
+            kind: cmake-qt-quick
           - framework: gtk4
             kind: cmake-gtk
           - framework: flutter
@@ -144,6 +146,20 @@ jobs:
             g++ \
             libgl1-mesa-dev
 
+      # Qt Quick needs the declarative module (Quick + Qml + QuickControls2
+      # dev/cmake files) on top of qt6-base-dev.
+      - name: Install Qt Quick system dependencies
+        if: matrix.kind == 'cmake-qt-quick'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            cmake \
+            ninja-build \
+            g++ \
+            libgl1-mesa-dev
+
       - name: Install GTK4 system dependencies
         if: matrix.kind == 'cmake-gtk'
         run: |
@@ -192,9 +208,9 @@ jobs:
         working-directory: ${{ matrix.dir }}
         run: cargo build --all-targets
 
-      # CMake frameworks (Qt Widgets, GTK4).
+      # CMake frameworks (Qt Widgets, Qt Quick, GTK4).
       - name: Configure and build with CMake
-        if: matrix.kind == 'cmake-qt' || matrix.kind == 'cmake-gtk'
+        if: matrix.kind == 'cmake-qt' || matrix.kind == 'cmake-qt-quick' || matrix.kind == 'cmake-gtk'
         run: |
           cmake -S ${{ matrix.framework }} -B ${{ matrix.framework }}/build -G Ninja
           cmake --build ${{ matrix.framework }}/build

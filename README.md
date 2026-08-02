@@ -1,6 +1,6 @@
 # lumen-benchmarks
 
-The same GUI app implemented in eight frameworks and measured the same
+The same GUI app implemented in nine frameworks and measured the same
 way, so the numbers compare like with like. The app, the workloads, and
 the measurement method are identical across frameworks; the per-framework
 differences that remain are listed as caveats in `results.md`.
@@ -12,12 +12,20 @@ differences that remain are listed as caveats in `results.md`.
 | `egui/` | eframe (latest) | `ScrollArea::show_rows` (virtualized) |
 | `iced/` | iced 0.13 | plain `Column` in `scrollable` (iced has no virtualized list) |
 | `qt-widgets/` | Qt6 Widgets, C++17 | `QListView` + `QAbstractListModel` (virtualized) |
+| `qt-quick/` | Qt6 Quick (QML + C++17) | `ListView` + `QAbstractListModel` (virtualized) |
 | `gtk4/` | GTK4, C | `GtkListView` + `GtkStringList` factory (virtualized) |
 | `flutter/` | Flutter (Dart, Impeller/Skia engine) | `ListView.builder` (virtualized); own renderer, not the system toolkit |
 | `tauri/` | Tauri 2 (Rust shell + system webkit2gtk webview) | hand-rolled windowed/virtualized DOM list; UI is HTML/JS/CSS in a browser engine |
 
 The GTK variant is plain C (chosen over the gtk4-rs bindings to keep the
-build light and match the reference C API directly). Flutter renders with
+build light and match the reference C API directly). Both Qt entrants
+exist because they draw through different paths: Qt Widgets paints native
+OS-styled controls through QStyle and draws almost nothing itself, while
+Qt Quick builds a scene graph and renders it through the RHI with its own
+glyph atlas and batched geometry (QtQuick.Controls' Basic style, so
+nothing there defers to a native style either). Qt Widgets sets the
+native-toolkit floor; Qt Quick is the like-for-like peer for Lumen,
+Flutter and the other own-renderer entrants. Flutter renders with
 its own engine (Impeller/Skia), so its window is a single engine surface,
 not native widgets; this is the closest analogue to Lumen's own-renderer
 model. Tauri renders in the system webkit2gtk webview: a browser engine
@@ -53,7 +61,7 @@ CLI modes (identical semantics in every implementation):
 Every implementation prints a `first_frame` marker line at its
 first-frame callback so the harness measures startup externally
 (process spawn to marker) in a framework-neutral way, plus a
-`startup_ms:` line for the in-app (self) first-frame time. All eight
+`startup_ms:` line for the in-app (self) first-frame time. All nine
 frameworks, including Lumen, are measured this same way.
 
 The Lumen variant has no CLI modes of its own: `lumenc run` is the entry
@@ -71,13 +79,13 @@ See the caveats section in `results.md`.
 ## Running
 
 ```sh
-./run.sh build     # build all eight (release), record stripped sizes
+./run.sh build     # build all nine (release), record stripped sizes
 ./run.sh validate  # calibrate + two full matrix rounds + agreement table
 ./run.sh all       # build + calibrate + one round; writes results.md + results.json
 ```
 
 Measurement runs happen entirely under a nested headless compositor;
-nothing opens on your desktop. All eight frameworks run windowed under
+nothing opens on your desktop. All nine frameworks run windowed under
 that one compositor. The harness starts the compositor itself, so
 `./run.sh` is the normal entry point; the command it runs is:
 
@@ -101,6 +109,7 @@ framework's rows rather than failing the run.
 | lumen | a Lumen framework checkout (see `LUMEN_REPO` below) and its Rust toolchain |
 | slint / egui / iced | rustc + cargo |
 | qt-widgets | CMake and Qt6 Widgets dev (`qmake6`, `Qt6WidgetsConfig`) |
+| qt-quick | CMake and Qt6 Quick dev (`Qt6QuickConfig`, `Qt6QuickControls2Config`), plus the QtQuick.Controls Basic style QML module at run time |
 | gtk4 | CMake, pkg-config, and GTK4 dev (`gtk4`) |
 | flutter | the Flutter SDK (`flutter` on PATH, linux desktop enabled) |
 | tauri | rustc + cargo, the Tauri CLI (`cargo tauri`), and webkit2gtk-4.1 dev |

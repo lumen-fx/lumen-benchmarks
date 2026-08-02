@@ -1,4 +1,5 @@
 /qt-widgets/build/
+/qt-quick/build/
 /gtk4/build/
 /harness/out/
 target/

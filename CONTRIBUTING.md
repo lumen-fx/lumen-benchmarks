@@ -24,7 +24,7 @@ produces numbers.
 ## Pull requests
 
 Keep the comparison like for like. A change to one framework's app usually
-needs the same change in the other seven; if it cannot be matched, add a caveat
+needs the same change in the other eight; if it cannot be matched, add a caveat
 to `results.md` instead of leaving the difference unstated.
 
 Commit numbers only from a run that measured them, on one quiet machine, and
